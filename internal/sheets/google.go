@@ -80,6 +80,12 @@ func (r *GoogleSheetRepository) AppendTransaction(ctx context.Context, tx *Trans
 		return fmt.Errorf("failed to ensure tab %q: %w", tabName, err)
 	}
 
+	nextID, err := r.nextDailyTransactionID(ctx, tabName, tx.Date)
+	if err != nil {
+		return fmt.Errorf("failed to recalculate next transaction id: %w", err)
+	}
+	tx.ID = nextID
+
 	valueRange := &sheets.ValueRange{
 		Values: [][]interface{}{tx.ToRow()},
 	}
@@ -899,4 +905,50 @@ func parseUpdatedRowIndex(updatedRange string) int {
 		return -1
 	}
 	return n
+}
+
+func (r *GoogleSheetRepository) nextDailyTransactionID(ctx context.Context, tabName string, when time.Time) (string, error) {
+	datePrefix := when.In(WIB).Format("20060102")
+	readRange := fmt.Sprintf("'%s'!A2:A", tabName)
+
+	resp, err := r.service.Spreadsheets.Values.Get(r.spreadsheetID, readRange).Context(ctx).Do()
+	if err != nil {
+		return "", fmt.Errorf("failed to read existing transaction IDs from %s: %w", tabName, err)
+	}
+
+	maxCounter := 0
+	for _, row := range resp.Values {
+		if len(row) == 0 {
+			continue
+		}
+		id := strings.TrimSpace(fmt.Sprintf("%v", row[0]))
+		counter, ok := parseDailyCounter(id, datePrefix)
+		if !ok {
+			continue
+		}
+		if counter > maxCounter {
+			maxCounter = counter
+		}
+	}
+
+	return fmt.Sprintf("%s-%03d", datePrefix, maxCounter+1), nil
+}
+
+func parseDailyCounter(id string, datePrefix string) (int, bool) {
+	prefix := datePrefix + "-"
+	if !strings.HasPrefix(id, prefix) {
+		return 0, false
+	}
+
+	suffix := strings.TrimPrefix(id, prefix)
+	if len(suffix) != 3 {
+		return 0, false
+	}
+
+	n, err := strconv.Atoi(suffix)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+
+	return n, true
 }
