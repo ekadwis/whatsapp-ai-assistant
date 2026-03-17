@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	aiinternal "github.com/verssache/whatsapp-ai-assistant/internal/ai"
 	"github.com/verssache/whatsapp-ai-assistant/internal/sheets"
@@ -241,5 +242,300 @@ func TestRecordTransaction_AppendError(t *testing.T) {
 	}
 	if repo.appendCalls != 1 {
 		t.Fatalf("expected AppendTransaction called once, got %d", repo.appendCalls)
+	}
+}
+
+type mockSheetRepositoryAdvanced struct {
+	transactions      []sheets.Transaction
+	getTransactionsErr error
+
+	getBudgetValue      float64
+	getBudgetErr        error
+	categoryTotalValue  float64
+	getCategoryTotalErr error
+
+	setBudgetErr   error
+	setBudgetCalls int
+	lastSetCategory string
+	lastSetAmount   float64
+
+	getTxByIDTx    *sheets.Transaction
+	getTxByIDRow   int
+	getTxByIDTab   string
+	getTxByIDErr   error
+
+	updateErr      error
+	updateCalls    int
+	lastUpdateTab  string
+	lastUpdateRow  int
+	lastUpdatedTx  *sheets.Transaction
+
+	deleteErr      error
+	deleteCalls    int
+	lastDeleteTab  string
+	lastDeleteRow  int
+}
+
+func (m *mockSheetRepositoryAdvanced) AppendTransaction(ctx context.Context, tx *sheets.Transaction) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) GetTransactions(ctx context.Context, tabName string) ([]sheets.Transaction, error) {
+	if m.getTransactionsErr != nil {
+		return nil, m.getTransactionsErr
+	}
+	return m.transactions, nil
+}
+
+func (m *mockSheetRepositoryAdvanced) GetTransactionByID(ctx context.Context, id string) (*sheets.Transaction, int, string, error) {
+	if m.getTxByIDErr != nil {
+		return nil, 0, "", m.getTxByIDErr
+	}
+	return m.getTxByIDTx, m.getTxByIDRow, m.getTxByIDTab, nil
+}
+
+func (m *mockSheetRepositoryAdvanced) UpdateTransaction(ctx context.Context, tabName string, rowIndex int, tx *sheets.Transaction) error {
+	m.updateCalls++
+	m.lastUpdateTab = tabName
+	m.lastUpdateRow = rowIndex
+	m.lastUpdatedTx = tx
+	return m.updateErr
+}
+
+func (m *mockSheetRepositoryAdvanced) DeleteTransaction(ctx context.Context, tabName string, rowIndex int) error {
+	m.deleteCalls++
+	m.lastDeleteTab = tabName
+	m.lastDeleteRow = rowIndex
+	return m.deleteErr
+}
+
+func (m *mockSheetRepositoryAdvanced) AppendNote(ctx context.Context, note *sheets.Note) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) GetBudget(ctx context.Context, category string) (float64, error) {
+	if m.getBudgetErr != nil {
+		return 0, m.getBudgetErr
+	}
+	return m.getBudgetValue, nil
+}
+
+func (m *mockSheetRepositoryAdvanced) SetBudget(ctx context.Context, category string, amount float64) error {
+	m.setBudgetCalls++
+	m.lastSetCategory = category
+	m.lastSetAmount = amount
+	return m.setBudgetErr
+}
+
+func (m *mockSheetRepositoryAdvanced) GetCategoryTotal(ctx context.Context, tabName string, category string) (float64, error) {
+	if m.getCategoryTotalErr != nil {
+		return 0, m.getCategoryTotalErr
+	}
+	return m.categoryTotalValue, nil
+}
+
+func (m *mockSheetRepositoryAdvanced) EnsureTabExists(ctx context.Context, tabName string) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) FormatHeaders(ctx context.Context, tabName string) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) FormatRow(ctx context.Context, tabName string, rowIndex int, isExpense bool) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) InitDashboard(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) InitBudgetTab(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) InitNotesTab(ctx context.Context) error {
+	return nil
+}
+
+func TestGenerateReport_Periods(t *testing.T) {
+	now := nowWIB()
+	repo := &mockSheetRepositoryAdvanced{
+		transactions: []sheets.Transaction{
+			{
+				ID:          "1",
+				Date:        now,
+				Type:        sheets.Expense,
+				Category:    "Makanan",
+				Description: "today expense",
+				Amount:      10000,
+			},
+			{
+				ID:          "2",
+				Date:        now,
+				Type:        sheets.Income,
+				Category:    "Gaji",
+				Description: "today income",
+				Amount:      20000,
+			},
+			{
+				ID:          "3",
+				Date:        now.AddDate(0, 0, -3),
+				Type:        sheets.Expense,
+				Category:    "Transportasi",
+				Description: "week expense",
+				Amount:      5000,
+			},
+			{
+				ID:          "4",
+				Date:        now.AddDate(0, 0, -10),
+				Type:        sheets.Expense,
+				Category:    "Belanja",
+				Description: "old expense",
+				Amount:      7000,
+			},
+		},
+	}
+	svc := NewFinanceService(repo, nil)
+
+	daily, err := svc.GenerateReport(context.Background(), "hari ini")
+	if err != nil {
+		t.Fatalf("daily report unexpected error: %v", err)
+	}
+	if daily.TotalIncome != 20000 {
+		t.Fatalf("daily income = %v, want %v", daily.TotalIncome, 20000.0)
+	}
+	if daily.TotalExpense != 10000 {
+		t.Fatalf("daily expense = %v, want %v", daily.TotalExpense, 10000.0)
+	}
+	if daily.Categories["Makanan"] != 10000 {
+		t.Fatalf("daily category Makanan = %v, want %v", daily.Categories["Makanan"], 10000.0)
+	}
+
+	weekly, err := svc.GenerateReport(context.Background(), "minggu ini")
+	if err != nil {
+		t.Fatalf("weekly report unexpected error: %v", err)
+	}
+	if weekly.TotalIncome != 20000 {
+		t.Fatalf("weekly income = %v, want %v", weekly.TotalIncome, 20000.0)
+	}
+	if weekly.TotalExpense != 15000 {
+		t.Fatalf("weekly expense = %v, want %v", weekly.TotalExpense, 15000.0)
+	}
+	if weekly.Categories["Transportasi"] != 5000 {
+		t.Fatalf("weekly category Transportasi = %v, want %v", weekly.Categories["Transportasi"], 5000.0)
+	}
+
+	monthly, err := svc.GenerateReport(context.Background(), "bulan ini")
+	if err != nil {
+		t.Fatalf("monthly report unexpected error: %v", err)
+	}
+	if monthly.TotalIncome != 20000 {
+		t.Fatalf("monthly income = %v, want %v", monthly.TotalIncome, 20000.0)
+	}
+	if monthly.TotalExpense != 22000 {
+		t.Fatalf("monthly expense = %v, want %v", monthly.TotalExpense, 22000.0)
+	}
+}
+
+func TestGenerateReport_UnknownPeriod(t *testing.T) {
+	repo := &mockSheetRepositoryAdvanced{}
+	svc := NewFinanceService(repo, nil)
+
+	_, err := svc.GenerateReport(context.Background(), "kuartal ini")
+	if err == nil {
+		t.Fatal("expected error for unknown period")
+	}
+	if !strings.Contains(err.Error(), "periode tidak dikenal") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBudgetMethods(t *testing.T) {
+	repo := &mockSheetRepositoryAdvanced{}
+	svc := NewFinanceService(repo, nil)
+
+	if err := svc.SetBudget(context.Background(), "Makanan", 500000); err != nil {
+		t.Fatalf("SetBudget unexpected error: %v", err)
+	}
+	if repo.setBudgetCalls != 1 {
+		t.Fatalf("expected SetBudget call count 1, got %d", repo.setBudgetCalls)
+	}
+	if repo.lastSetCategory != "Makanan" || repo.lastSetAmount != 500000 {
+		t.Fatalf("unexpected set budget payload: category=%q amount=%v", repo.lastSetCategory, repo.lastSetAmount)
+	}
+
+	repo.getBudgetValue = 0
+	alert, err := svc.CheckBudget(context.Background(), "Makanan")
+	if err != nil {
+		t.Fatalf("CheckBudget unexpected error: %v", err)
+	}
+	if alert != "" {
+		t.Fatalf("expected empty alert when budget not set, got %q", alert)
+	}
+
+	repo.getBudgetValue = 100000
+	repo.categoryTotalValue = 85000
+	alert, err = svc.CheckBudget(context.Background(), "Makanan")
+	if err != nil {
+		t.Fatalf("CheckBudget warning case error: %v", err)
+	}
+	if !strings.Contains(alert, "Peringatan Budget") {
+		t.Fatalf("expected warning alert, got %q", alert)
+	}
+
+	repo.getBudgetValue = 100000
+	repo.categoryTotalValue = 120000
+	alert, err = svc.CheckBudget(context.Background(), "Makanan")
+	if err != nil {
+		t.Fatalf("CheckBudget over case error: %v", err)
+	}
+	if !strings.Contains(alert, "Peringatan Budget") {
+		t.Fatalf("expected over-budget alert, got %q", alert)
+	}
+}
+
+func TestEditAndDeleteTransaction(t *testing.T) {
+	repo := &mockSheetRepositoryAdvanced{
+		getTxByIDTx: &sheets.Transaction{
+			ID:          "20260317-001",
+			Date:        time.Date(2026, 3, 17, 10, 0, 0, 0, sheets.WIB),
+			Type:        sheets.Expense,
+			Category:    "Makanan",
+			Description: "ayam",
+			Amount:      10000,
+		},
+		getTxByIDRow: 5,
+		getTxByIDTab: "Maret 2026",
+	}
+	svc := NewFinanceService(repo, nil)
+
+	updated, err := svc.EditTransaction(context.Background(), "20260317-001", "jumlah", "20k")
+	if err != nil {
+		t.Fatalf("EditTransaction unexpected error: %v", err)
+	}
+	if updated.Amount != 20000 {
+		t.Fatalf("expected updated amount 20000, got %v", updated.Amount)
+	}
+	if repo.updateCalls != 1 {
+		t.Fatalf("expected UpdateTransaction call count 1, got %d", repo.updateCalls)
+	}
+	if repo.lastUpdateTab != "Maret 2026" || repo.lastUpdateRow != 5 {
+		t.Fatalf("unexpected update target: tab=%q row=%d", repo.lastUpdateTab, repo.lastUpdateRow)
+	}
+
+	_, err = svc.EditTransaction(context.Background(), "20260317-001", "unknown", "x")
+	if err == nil {
+		t.Fatal("expected error for unknown edit field")
+	}
+
+	if err := svc.DeleteTransaction(context.Background(), "20260317-001"); err != nil {
+		t.Fatalf("DeleteTransaction unexpected error: %v", err)
+	}
+	if repo.deleteCalls != 1 {
+		t.Fatalf("expected DeleteTransaction call count 1, got %d", repo.deleteCalls)
+	}
+	if repo.lastDeleteTab != "Maret 2026" || repo.lastDeleteRow != 5 {
+		t.Fatalf("unexpected delete target: tab=%q row=%d", repo.lastDeleteTab, repo.lastDeleteRow)
 	}
 }

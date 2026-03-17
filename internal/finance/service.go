@@ -3,11 +3,14 @@ package finance
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/verssache/whatsapp-ai-assistant/internal/ai"
 	"github.com/verssache/whatsapp-ai-assistant/internal/sheets"
+	"github.com/verssache/whatsapp-ai-assistant/pkg/formatter"
 )
 
 var monthNamesID = map[time.Month]string{
@@ -30,6 +33,15 @@ type FinanceService struct {
 	ai   *ai.LLMClient
 }
 
+type ReportData struct {
+	Period       string
+	DateRange    string
+	TotalIncome  float64
+	TotalExpense float64
+	NetBalance   float64
+	Categories   map[string]float64
+}
+
 func NewFinanceService(repo sheets.SheetRepository, aiClient *ai.LLMClient) *FinanceService {
 	return &FinanceService{
 		repo: repo,
@@ -37,32 +49,42 @@ func NewFinanceService(repo sheets.SheetRepository, aiClient *ai.LLMClient) *Fin
 	}
 }
 
-// RecordTransaction creates and stores one transaction to the current WIB month tab.
+// RecordTransaction keeps backward compatibility and ignores budget alert output.
 func (s *FinanceService) RecordTransaction(ctx context.Context, args *ai.RecordTransactionArgs) (*sheets.Transaction, error) {
+	tx, _, err := s.RecordTransactionWithBudget(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	return tx, nil
+}
+
+// RecordTransactionWithBudget creates and stores one transaction to the current WIB month tab
+// and returns optional budget alert text for expense transactions.
+func (s *FinanceService) RecordTransactionWithBudget(ctx context.Context, args *ai.RecordTransactionArgs) (*sheets.Transaction, string, error) {
 	if s == nil {
-		return nil, fmt.Errorf("finance service is nil")
+		return nil, "", fmt.Errorf("finance service is nil")
 	}
 	if s.repo == nil {
-		return nil, fmt.Errorf("sheet repository is nil")
+		return nil, "", fmt.Errorf("sheet repository is nil")
 	}
 	if args == nil {
-		return nil, fmt.Errorf("record transaction args is nil")
+		return nil, "", fmt.Errorf("record transaction args is nil")
 	}
 	if strings.TrimSpace(args.Description) == "" {
-		return nil, fmt.Errorf("description is required")
+		return nil, "", fmt.Errorf("description is required")
 	}
 	if strings.TrimSpace(args.Category) == "" {
-		return nil, fmt.Errorf("category is required")
+		return nil, "", fmt.Errorf("category is required")
 	}
 	if args.Amount <= 0 {
-		return nil, fmt.Errorf("amount must be greater than zero")
+		return nil, "", fmt.Errorf("amount must be greater than zero")
 	}
 
 	now := nowWIB()
 	tabName := tabNameForTime(now)
 
 	if err := s.repo.EnsureTabExists(ctx, tabName); err != nil {
-		return nil, fmt.Errorf("failed to ensure tab %q: %w", tabName, err)
+		return nil, "", fmt.Errorf("failed to ensure tab %q: %w", tabName, err)
 	}
 
 	tx := &sheets.Transaction{
@@ -75,10 +97,171 @@ func (s *FinanceService) RecordTransaction(ctx context.Context, args *ai.RecordT
 	}
 
 	if err := s.repo.AppendTransaction(ctx, tx); err != nil {
-		return nil, fmt.Errorf("failed to append transaction: %w", err)
+		return nil, "", fmt.Errorf("failed to append transaction: %w", err)
+	}
+
+	var budgetAlert string
+	if tx.Type == sheets.Expense {
+		alert, err := s.CheckBudget(ctx, tx.Category)
+		if err == nil {
+			budgetAlert = alert
+		}
+	}
+
+	return tx, budgetAlert, nil
+}
+
+func (s *FinanceService) SetBudget(ctx context.Context, category string, amount float64) error {
+	if s == nil || s.repo == nil {
+		return fmt.Errorf("sheet repository is nil")
+	}
+	category = strings.TrimSpace(category)
+	if category == "" {
+		return fmt.Errorf("kategori tidak boleh kosong")
+	}
+	if amount <= 0 {
+		return fmt.Errorf("jumlah budget harus lebih dari 0")
+	}
+	return s.repo.SetBudget(ctx, category, amount)
+}
+
+func (s *FinanceService) CheckBudget(ctx context.Context, category string) (string, error) {
+	if s == nil || s.repo == nil {
+		return "", fmt.Errorf("sheet repository is nil")
+	}
+	category = strings.TrimSpace(category)
+	if category == "" {
+		return "", nil
+	}
+
+	budget, err := s.repo.GetBudget(ctx, category)
+	if err != nil {
+		return "", err
+	}
+	if budget <= 0 {
+		return "", nil
+	}
+
+	spent, err := s.repo.GetCategoryTotal(ctx, tabNameForTime(nowWIB()), category)
+	if err != nil {
+		return "", err
+	}
+
+	remaining := budget - spent
+	if remaining < 0 {
+		return formatter.FormatBudgetAlert(category, budget, spent, remaining), nil
+	}
+	if remaining <= budget*0.2 {
+		return formatter.FormatBudgetAlert(category, budget, spent, remaining), nil
+	}
+
+	return "", nil
+}
+
+func (s *FinanceService) GenerateReport(ctx context.Context, period string) (*ReportData, error) {
+	if s == nil || s.repo == nil {
+		return nil, fmt.Errorf("sheet repository is nil")
+	}
+
+	now := nowWIB()
+	tabName := tabNameForTime(now)
+
+	txs, err := s.repo.GetTransactions(ctx, tabName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load transactions: %w", err)
+	}
+
+	mode := normalizePeriod(period)
+	filtered, dateRange, err := filterTransactionsByPeriod(txs, now, mode)
+	if err != nil {
+		return nil, err
+	}
+
+	report := &ReportData{
+		Period:     mode,
+		DateRange:  dateRange,
+		Categories: map[string]float64{},
+	}
+
+	for _, tx := range filtered {
+		if tx.Type == sheets.Income {
+			report.TotalIncome += tx.Amount
+			continue
+		}
+		report.TotalExpense += tx.Amount
+		report.Categories[tx.Category] += tx.Amount
+	}
+
+	report.Categories = topNCategories(report.Categories, 5)
+	report.NetBalance = report.TotalIncome - report.TotalExpense
+
+	return report, nil
+}
+
+func (s *FinanceService) EditTransaction(ctx context.Context, id, field, value string) (*sheets.Transaction, error) {
+	if s == nil || s.repo == nil {
+		return nil, fmt.Errorf("sheet repository is nil")
+	}
+	id = strings.TrimSpace(id)
+	field = strings.ToLower(strings.TrimSpace(field))
+	value = strings.TrimSpace(value)
+
+	if id == "" {
+		return nil, fmt.Errorf("id transaksi tidak boleh kosong")
+	}
+	if field == "" {
+		return nil, fmt.Errorf("field tidak boleh kosong")
+	}
+	if value == "" {
+		return nil, fmt.Errorf("nilai baru tidak boleh kosong")
+	}
+
+	tx, rowIndex, tabName, err := s.repo.GetTransactionByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("transaksi %s tidak ditemukan: %w", id, err)
+	}
+
+	switch field {
+	case "jumlah", "amount":
+		amount, err := parseIDRAmountLocal(value)
+		if err != nil {
+			return nil, fmt.Errorf("jumlah tidak valid: %w", err)
+		}
+		tx.Amount = amount
+	case "kategori", "category":
+		tx.Category = value
+	case "deskripsi", "description":
+		tx.Description = value
+	default:
+		return nil, fmt.Errorf("field tidak dikenal: %s. Gunakan: jumlah, kategori, atau deskripsi", field)
+	}
+
+	if err := s.repo.UpdateTransaction(ctx, tabName, rowIndex, tx); err != nil {
+		return nil, fmt.Errorf("gagal memperbarui transaksi: %w", err)
 	}
 
 	return tx, nil
+}
+
+func (s *FinanceService) DeleteTransaction(ctx context.Context, id string) error {
+	if s == nil || s.repo == nil {
+		return fmt.Errorf("sheet repository is nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("id transaksi tidak boleh kosong")
+	}
+
+	_, rowIndex, tabName, err := s.repo.GetTransactionByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("transaksi %s tidak ditemukan: %w", id, err)
+	}
+
+	if err := s.repo.DeleteTransaction(ctx, tabName, rowIndex); err != nil {
+		return fmt.Errorf("gagal menghapus transaksi: %w", err)
+	}
+
+	return nil
 }
 
 func nowWIB() time.Time {
@@ -98,4 +281,153 @@ func toTransactionType(raw string) sheets.TransactionType {
 		return sheets.Income
 	}
 	return sheets.Expense
+}
+
+func normalizePeriod(period string) string {
+	p := strings.ToLower(strings.TrimSpace(period))
+	switch p {
+	case "", "daily", "hari ini", "harian":
+		return "daily"
+	case "weekly", "minggu ini", "mingguan":
+		return "weekly"
+	case "monthly", "bulan ini", "bulanan":
+		return "monthly"
+	default:
+		return p
+	}
+}
+
+func filterTransactionsByPeriod(txs []sheets.Transaction, now time.Time, mode string) ([]sheets.Transaction, string, error) {
+	switch mode {
+	case "daily":
+		todayKey := now.In(sheets.WIB).Format("20060102")
+		var out []sheets.Transaction
+		for _, tx := range txs {
+			if tx.Date.In(sheets.WIB).Format("20060102") == todayKey {
+				out = append(out, tx)
+			}
+		}
+		return out, formatDateID(now), nil
+
+	case "weekly":
+		start := now.AddDate(0, 0, -6)
+		startKey := start.In(sheets.WIB).Format("20060102")
+		endKey := now.In(sheets.WIB).Format("20060102")
+		var out []sheets.Transaction
+		for _, tx := range txs {
+			k := tx.Date.In(sheets.WIB).Format("20060102")
+			if k >= startKey && k <= endKey {
+				out = append(out, tx)
+			}
+		}
+		return out, fmt.Sprintf("%s - %s", formatDateID(start), formatDateID(now)), nil
+
+	case "monthly":
+		return txs, fmt.Sprintf("%s %d", monthNamesID[now.Month()], now.Year()), nil
+
+	default:
+		return nil, "", fmt.Errorf("periode tidak dikenal: %s", mode)
+	}
+}
+
+func topNCategories(in map[string]float64, n int) map[string]float64 {
+	type kv struct {
+		Key string
+		Val float64
+	}
+	items := make([]kv, 0, len(in))
+	for k, v := range in {
+		items = append(items, kv{Key: k, Val: v})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Val == items[j].Val {
+			return items[i].Key < items[j].Key
+		}
+		return items[i].Val > items[j].Val
+	})
+	if len(items) > n {
+		items = items[:n]
+	}
+	out := make(map[string]float64, len(items))
+	for _, it := range items {
+		out[it.Key] = it.Val
+	}
+	return out
+}
+
+func formatDateID(t time.Time) string {
+	local := t.In(sheets.WIB)
+	month := monthNamesID[local.Month()]
+	return fmt.Sprintf("%02d %s %d", local.Day(), month, local.Year())
+}
+
+func parseIDRAmountLocal(s string) (float64, error) {
+	raw := strings.ToLower(strings.TrimSpace(s))
+	if raw == "" {
+		return 0, fmt.Errorf("nilai kosong")
+	}
+
+	raw = strings.TrimSpace(strings.TrimPrefix(raw, "rp."))
+	raw = strings.TrimSpace(strings.TrimPrefix(raw, "rp"))
+	raw = strings.TrimSpace(strings.TrimPrefix(raw, "idr"))
+	raw = strings.ReplaceAll(raw, " ", "")
+
+	multiplier := 1.0
+	switch {
+	case strings.HasSuffix(raw, "juta"):
+		multiplier = 1_000_000
+		raw = strings.TrimSuffix(raw, "juta")
+	case strings.HasSuffix(raw, "jt"):
+		multiplier = 1_000_000
+		raw = strings.TrimSuffix(raw, "jt")
+	case strings.HasSuffix(raw, "ribu"):
+		multiplier = 1_000
+		raw = strings.TrimSuffix(raw, "ribu")
+	case strings.HasSuffix(raw, "rb"):
+		multiplier = 1_000
+		raw = strings.TrimSuffix(raw, "rb")
+	case strings.HasSuffix(raw, "k"):
+		multiplier = 1_000
+		raw = strings.TrimSuffix(raw, "k")
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, fmt.Errorf("format jumlah tidak valid")
+	}
+
+	if strings.Contains(raw, ",") && strings.Contains(raw, ".") {
+		if strings.LastIndex(raw, ",") > strings.LastIndex(raw, ".") {
+			raw = strings.ReplaceAll(raw, ".", "")
+			raw = strings.ReplaceAll(raw, ",", ".")
+		} else {
+			raw = strings.ReplaceAll(raw, ",", "")
+		}
+	} else if strings.Contains(raw, ",") {
+		raw = strings.ReplaceAll(raw, ",", ".")
+	} else if strings.Count(raw, ".") >= 1 {
+		parts := strings.Split(raw, ".")
+		grouped := true
+		for i := 1; i < len(parts); i++ {
+			if len(parts[i]) != 3 {
+				grouped = false
+				break
+			}
+		}
+		if grouped {
+			raw = strings.ReplaceAll(raw, ".", "")
+		}
+	}
+
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("format jumlah tidak valid")
+	}
+	v *= multiplier
+
+	if v <= 0 {
+		return 0, fmt.Errorf("jumlah harus lebih dari 0")
+	}
+
+	return v, nil
 }

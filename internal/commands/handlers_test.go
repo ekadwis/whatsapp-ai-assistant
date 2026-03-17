@@ -101,3 +101,76 @@ func TestCategoryConstants_NonEmpty(t *testing.T) {
 		t.Fatalf("expected first income category to be %q, got %q", "Gaji", IncomeCategories[0])
 	}
 }
+
+func TestIsValidExpenseCategory(t *testing.T) {
+	t.Parallel()
+
+	validCases := []string{
+		"Makanan",
+		"Transportasi",
+		"makanan",
+		"  Belanja  ",
+	}
+	for _, c := range validCases {
+		if !isValidExpenseCategory(c) {
+			t.Fatalf("expected category %q to be valid", c)
+		}
+	}
+
+	invalidCases := []string{
+		"",
+		"   ",
+		"Gaji",
+		"UnknownCategory",
+	}
+	for _, c := range invalidCases {
+		if isValidExpenseCategory(c) {
+			t.Fatalf("expected category %q to be invalid", c)
+		}
+	}
+}
+
+func TestParseAmount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		want    float64
+		wantErr bool
+	}{
+		{name: "plain number", input: "500000", want: 500000},
+		{name: "with rp prefix", input: "Rp 50.000", want: 50000},
+		{name: "k suffix", input: "16k", want: 16000},
+		{name: "rb suffix", input: "16rb", want: 16000},
+		{name: "ribu suffix", input: "16ribu", want: 16000},
+		{name: "jt suffix", input: "1.5jt", want: 1500000},
+		{name: "juta suffix", input: "2juta", want: 2000000},
+		{name: "decimal comma", input: "16,5k", want: 16500},
+		{name: "invalid text", input: "abc", wantErr: true},
+		{name: "zero", input: "0", wantErr: true},
+		{name: "empty", input: "", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseAmount(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseAmount(%q) expected error, got nil", tc.input)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("parseAmount(%q) unexpected error: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseAmount(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
