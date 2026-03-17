@@ -173,18 +173,12 @@ Bot will create/manage tabs such as:
 
 ---
 
-## Development checks
-
-```bash
-go build ./...
-go test ./...
-go vet ./...
-```
-
----
-
 ## Security notes
 
 - Never commit `.env` with real secrets.
 - Never commit service account JSON to public repo.
 - Rotate LLM key/service-account key if exposed.
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
