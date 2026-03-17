@@ -18,7 +18,7 @@ func RandomTypingDelay() time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-// SendPresenceBeforeReply emits typing presence and waits briefly before reply.
+// SendPresenceBeforeReply emits typing presence before reply.
 func SendPresenceBeforeReply(ctx context.Context, messenger Messenger, recipient string) {
 	if messenger == nil {
 		return
@@ -29,9 +29,6 @@ func SendPresenceBeforeReply(ctx context.Context, messenger Messenger, recipient
 
 	// Best-effort presence; ignore error so chat flow still proceeds.
 	_ = messenger.SendPresence(ctx, recipient)
-
-	// Extra jitter to avoid robotic response timing.
-	time.Sleep(RandomTypingDelay())
 }
 
 // SendTextWithPresence sends typing presence first, then the text reply.

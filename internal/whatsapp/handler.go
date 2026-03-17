@@ -39,7 +39,7 @@ func (h *Handler) Register(client *whatsmeow.Client) {
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.Message:
-			h.handleMessage(context.Background(), v)
+			go h.handleMessage(context.Background(), v)
 		}
 	})
 }
