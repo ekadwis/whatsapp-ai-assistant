@@ -71,8 +71,8 @@ func (h *Handler) handleMessage(ctx context.Context, evt *events.Message) {
 		return
 	}
 
-	// 5) Send response (best-effort, silent on error).
-	_ = h.messenger.SendText(ctx, evt.Info.Sender.User, response)
+	// 5) Send response with typing presence (best-effort, silent on error).
+	_ = SendTextWithPresence(ctx, h.messenger, evt.Info.Sender.User, response)
 }
 
 func getTextFromMessage(msg *waE2E.Message) string {
