@@ -182,3 +182,48 @@ func TestHandleMessage_PendingExpiredThenFallsBackToNormalFlow(t *testing.T) {
 		t.Fatal("expected expired pending action to be cleared")
 	}
 }
+
+func TestHandleMessage_RecordTransactionToolCallExecutesImmediately(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices": [{
+				"message": {
+					"content": "",
+					"tool_calls": [{
+						"id": "call_1",
+						"type": "function",
+						"function": {
+							"name": "record_transaction",
+							"arguments": "{\"type\":\"expense\",\"amount\":220000,\"category\":\"Transportasi\",\"description\":\"Beli bensin mobil\"}"
+						}
+					}]
+				}
+			}]
+		}`))
+	}))
+	defer srv.Close()
+
+	repo := &mockSheetRepo{}
+	fin := finance.NewFinanceService(repo, nil)
+	noteSvc := notes.NewNotesService(repo)
+	llm := ai.NewLLMClient(srv.URL, "test-key", "test-model")
+
+	r := NewAppRouter(commands.NewRouter(), llm, fin, noteSvc)
+
+	sender := "628123"
+	got := r.HandleMessage(context.Background(), sender, "beli bensin mobil 220k")
+
+	if !strings.Contains(got, "Pengeluaran Dicatat") {
+		t.Fatalf("expected immediate transaction execution response, got %q", got)
+	}
+	if repo.ensureCalls != 1 {
+		t.Fatalf("expected EnsureTabExists called once, got %d", repo.ensureCalls)
+	}
+	if repo.appendCalls != 1 {
+		t.Fatalf("expected AppendTransaction called once, got %d", repo.appendCalls)
+	}
+	if _, ok := r.pendingActions.Load(sender); ok {
+		t.Fatal("expected no pending confirmation after immediate execution")
+	}
+}

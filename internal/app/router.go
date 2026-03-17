@@ -139,17 +139,7 @@ func (r *AppRouter) handleToolCalls(ctx context.Context, sender string, calls []
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
 				return formatter.FormatError("Format data transaksi tidak valid.")
 			}
-
-			r.pendingActions.Store(sender, &PendingAction{
-				Transaction: &args,
-				CreatedAt:   time.Now(),
-			})
-
-			txType := "pengeluaran"
-			if strings.EqualFold(strings.TrimSpace(args.Type), "income") {
-				txType = "pemasukan"
-			}
-			return formatter.FormatConfirmation(args.Description, txType, args.Amount, args.Category)
+			return r.executeTransaction(ctx, &args)
 
 		case "get_report":
 			if r.financeService == nil {
