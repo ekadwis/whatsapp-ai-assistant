@@ -214,8 +214,8 @@ func TestHandleMessage_RecordTransactionToolCallExecutesImmediately(t *testing.T
 	sender := "628123"
 	got := r.HandleMessage(context.Background(), sender, "beli bensin mobil 220k")
 
-	if !strings.Contains(got, "Pengeluaran Dicatat") {
-		t.Fatalf("expected immediate transaction execution response, got %q", got)
+	if !strings.Contains(strings.ToLower(got), "pengeluaran berhasil dicatat") {
+		t.Fatalf("expected immediate compact transaction response, got %q", got)
 	}
 	if repo.ensureCalls != 1 {
 		t.Fatalf("expected EnsureTabExists called once, got %d", repo.ensureCalls)

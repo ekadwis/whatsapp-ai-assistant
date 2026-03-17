@@ -343,17 +343,18 @@ func formatCompactTransactionSummary(results []transactionExecResult) string {
 		}
 	}
 
-	title := "✅ *Transaksi Dicatat!*"
+	title := "✅ *Transaksi berhasil dicatat!*"
 	if allExpense {
-		title = "✅ *Pengeluaran Dicatat!*"
+		title = fmt.Sprintf("✅ *%d pengeluaran berhasil dicatat!*", len(results))
 	} else if allIncome {
-		title = "✅ *Pemasukan Dicatat!*"
+		title = fmt.Sprintf("✅ *%d pemasukan berhasil dicatat!*", len(results))
 	}
 
 	var b strings.Builder
 	b.WriteString(title)
 	b.WriteString("\n\n")
 
+	totalAmount := 0.0
 	for i, item := range results {
 		if i > 0 {
 			b.WriteString("\n\n")
@@ -366,7 +367,26 @@ func formatCompactTransactionSummary(results []transactionExecResult) string {
 		b.WriteString(item.Category)
 		b.WriteString("\n💰 Jumlah: ")
 		b.WriteString(formatIDRCompact(item.Amount))
+
+		totalAmount += item.Amount
 	}
+
+	icon := "💰"
+	label := "Total"
+	if allExpense {
+		icon = "💸"
+		label = "Total Pengeluaran"
+	} else if allIncome {
+		icon = "💵"
+		label = "Total Pemasukan"
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString(icon)
+	b.WriteString(" ")
+	b.WriteString(label)
+	b.WriteString(": ")
+	b.WriteString(formatIDRCompact(totalAmount))
 
 	last := results[len(results)-1].When.In(time.FixedZone("WIB", 7*60*60))
 	b.WriteString("\n\n📅 ")
