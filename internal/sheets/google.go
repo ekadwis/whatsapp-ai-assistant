@@ -3,6 +3,7 @@ package sheets
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"google.golang.org/api/option"
 	"google.golang.org/api/sheets/v4"
@@ -35,11 +36,63 @@ func NewGoogleSheetRepository(credsPath, spreadsheetID string) (*GoogleSheetRepo
 	}, nil
 }
 
+var monthNamesID = map[time.Month]string{
+	time.January:   "Januari",
+	time.February:  "Februari",
+	time.March:     "Maret",
+	time.April:     "April",
+	time.May:       "Mei",
+	time.June:      "Juni",
+	time.July:      "Juli",
+	time.August:    "Agustus",
+	time.September: "September",
+	time.October:   "Oktober",
+	time.November:  "November",
+	time.December:  "Desember",
+}
+
+func tabNameForTime(t time.Time) string {
+	local := t.In(WIB)
+	monthName, ok := monthNamesID[local.Month()]
+	if !ok {
+		monthName = local.Month().String()
+	}
+	return fmt.Sprintf("%s %d", monthName, local.Year())
+}
+
 // AppendTransaction adds a transaction row to the month tab.
-// TODO: implement Google Sheets append logic.
 func (r *GoogleSheetRepository) AppendTransaction(ctx context.Context, tx *Transaction) error {
-	_ = ctx
-	_ = tx
+	if r == nil {
+		return fmt.Errorf("repository is nil")
+	}
+	if r.service == nil {
+		return fmt.Errorf("sheets service is nil")
+	}
+	if tx == nil {
+		return fmt.Errorf("transaction is nil")
+	}
+
+	tabName := tabNameForTime(tx.Date)
+
+	if err := r.EnsureTabExists(ctx, tabName); err != nil {
+		return fmt.Errorf("failed to ensure tab %q: %w", tabName, err)
+	}
+
+	valueRange := &sheets.ValueRange{
+		Values: [][]interface{}{tx.ToRow()},
+	}
+	appendRange := fmt.Sprintf("'%s'!A:G", tabName)
+
+	_, err := r.service.Spreadsheets.Values.
+		Append(r.spreadsheetID, appendRange, valueRange).
+		ValueInputOption("USER_ENTERED").
+		InsertDataOption("INSERT_ROWS").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return fmt.Errorf("sheets append failed: %w", err)
+	}
+
 	return nil
 }
 
