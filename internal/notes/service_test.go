@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/verssache/whatsapp-ai-assistant/internal/sheets"
 )
@@ -82,6 +83,30 @@ func (m *mockSheetRepository) InitBudgetTab(ctx context.Context) error {
 
 func (m *mockSheetRepository) InitNotesTab(ctx context.Context) error {
 	return nil
+}
+
+func (m *mockSheetRepository) InitReminderTab(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockSheetRepository) AppendReminder(ctx context.Context, reminder *sheets.Reminder) error {
+	return nil
+}
+
+func (m *mockSheetRepository) ListActiveReminders(ctx context.Context) ([]sheets.Reminder, error) {
+	return nil, nil
+}
+
+func (m *mockSheetRepository) GetReminderByID(ctx context.Context, id string) (*sheets.Reminder, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockSheetRepository) UpdateReminder(ctx context.Context, rowIndex int, reminder *sheets.Reminder) error {
+	return nil
+}
+
+func (m *mockSheetRepository) ListDueReminders(ctx context.Context, now time.Time) ([]sheets.Reminder, error) {
+	return nil, nil
 }
 
 func TestNotesService_SaveNote_Success(t *testing.T) {

@@ -458,6 +458,8 @@ func (r *GoogleSheetRepository) EnsureTabExists(ctx context.Context, tabName str
 		return r.ensureNotesHeader(ctx)
 	case "Dashboard":
 		return nil
+	case ReminderSheetName:
+		return r.ensureReminderHeader(ctx)
 	default:
 		if isMonthlyTabName(tabName) {
 			if err := r.ensureMonthlyHeader(ctx, tabName); err != nil {
@@ -721,6 +723,26 @@ func (r *GoogleSheetRepository) InitNotesTab(ctx context.Context) error {
 	return nil
 }
 
+// InitReminderTab creates Reminders tab structure.
+func (r *GoogleSheetRepository) InitReminderTab(ctx context.Context) error {
+	if r == nil {
+		return fmt.Errorf("repository is nil")
+	}
+
+	if err := r.EnsureTabExists(ctx, ReminderSheetName); err != nil {
+		return err
+	}
+	if err := r.ensureReminderHeader(ctx); err != nil {
+		return err
+	}
+
+	if err := r.formatHeaderRow(ctx, ReminderSheetName, int64(len(ReminderHeaders))); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (r *GoogleSheetRepository) formatHeaderRow(ctx context.Context, tabName string, colCount int64) error {
 	if colCount <= 0 {
 		return nil
@@ -846,6 +868,32 @@ func (r *GoogleSheetRepository) ensureNotesHeader(ctx context.Context) error {
 	return nil
 }
 
+func (r *GoogleSheetRepository) ensureReminderHeader(ctx context.Context) error {
+	resp, err := r.service.Spreadsheets.Values.
+		Get(r.spreadsheetID, "'Reminders'!A1:P1").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return fmt.Errorf("failed to check reminders header: %w", err)
+	}
+	if resp != nil && len(resp.Values) > 0 && len(resp.Values[0]) >= len(ReminderHeaders) {
+		return nil
+	}
+
+	headers := &sheets.ValueRange{
+		Values: [][]interface{}{ReminderHeaders},
+	}
+	_, err = r.service.Spreadsheets.Values.
+		Update(r.spreadsheetID, "'Reminders'!A1:P1", headers).
+		ValueInputOption("RAW").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return fmt.Errorf("failed to write reminders headers: %w", err)
+	}
+	return nil
+}
+
 func (r *GoogleSheetRepository) getSheetIDWithRefresh(ctx context.Context, tabName string) (int, error) {
 	if id, ok := r.tabManager.GetSheetID(tabName); ok {
 		return id, nil
@@ -905,6 +953,168 @@ func parseUpdatedRowIndex(updatedRange string) int {
 		return -1
 	}
 	return n
+}
+
+// AppendReminder adds a reminder row to Reminders tab.
+func (r *GoogleSheetRepository) AppendReminder(ctx context.Context, reminder *Reminder) error {
+	if r == nil {
+		return fmt.Errorf("repository is nil")
+	}
+	if reminder == nil {
+		return fmt.Errorf("reminder is nil")
+	}
+	reminder.Normalize()
+	if err := reminder.Validate(); err != nil {
+		return err
+	}
+
+	if err := r.InitReminderTab(ctx); err != nil {
+		return err
+	}
+
+	valueRange := &sheets.ValueRange{
+		Values: [][]interface{}{reminder.ToRow()},
+	}
+
+	_, err := r.service.Spreadsheets.Values.
+		Append(r.spreadsheetID, "'Reminders'!A:P", valueRange).
+		ValueInputOption("USER_ENTERED").
+		InsertDataOption("INSERT_ROWS").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return fmt.Errorf("failed to append reminder: %w", err)
+	}
+
+	return nil
+}
+
+// ListActiveReminders returns active reminders.
+func (r *GoogleSheetRepository) ListActiveReminders(ctx context.Context) ([]Reminder, error) {
+	if r == nil {
+		return nil, fmt.Errorf("repository is nil")
+	}
+	if err := r.InitReminderTab(ctx); err != nil {
+		return nil, err
+	}
+
+	resp, err := r.service.Spreadsheets.Values.
+		Get(r.spreadsheetID, "'Reminders'!A2:P").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list reminders: %w", err)
+	}
+	if resp == nil || len(resp.Values) == 0 {
+		return []Reminder{}, nil
+	}
+
+	out := make([]Reminder, 0, len(resp.Values))
+	for _, row := range resp.Values {
+		rem, err := ReminderFromRow(row)
+		if err != nil {
+			continue
+		}
+		if rem.Status == ReminderStatusActive {
+			out = append(out, *rem)
+		}
+	}
+	return out, nil
+}
+
+// GetReminderByID returns reminder and row index in Reminders tab.
+func (r *GoogleSheetRepository) GetReminderByID(ctx context.Context, id string) (*Reminder, int, error) {
+	if r == nil {
+		return nil, 0, fmt.Errorf("repository is nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, 0, fmt.Errorf("reminder ID is required")
+	}
+	if err := r.InitReminderTab(ctx); err != nil {
+		return nil, 0, err
+	}
+
+	resp, err := r.service.Spreadsheets.Values.
+		Get(r.spreadsheetID, "'Reminders'!A2:P").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read reminders: %w", err)
+	}
+	if resp == nil || len(resp.Values) == 0 {
+		return nil, 0, fmt.Errorf("reminder %s not found", id)
+	}
+
+	for i, row := range resp.Values {
+		if len(row) == 0 {
+			continue
+		}
+		rowID := strings.TrimSpace(fmt.Sprintf("%v", row[0]))
+		if rowID != id {
+			continue
+		}
+		rem, err := ReminderFromRow(row)
+		if err != nil {
+			return nil, 0, err
+		}
+		return rem, i + 2, nil
+	}
+
+	return nil, 0, fmt.Errorf("reminder %s not found", id)
+}
+
+// UpdateReminder updates reminder row at rowIndex.
+func (r *GoogleSheetRepository) UpdateReminder(ctx context.Context, rowIndex int, reminder *Reminder) error {
+	if r == nil {
+		return fmt.Errorf("repository is nil")
+	}
+	if rowIndex < 2 {
+		return fmt.Errorf("invalid row index: %d", rowIndex)
+	}
+	if reminder == nil {
+		return fmt.Errorf("reminder is nil")
+	}
+	reminder.Normalize()
+	if err := reminder.Validate(); err != nil {
+		return err
+	}
+
+	if err := r.InitReminderTab(ctx); err != nil {
+		return err
+	}
+
+	writeRange := fmt.Sprintf("'Reminders'!A%d:P%d", rowIndex, rowIndex)
+	valueRange := &sheets.ValueRange{
+		Values: [][]interface{}{reminder.ToRow()},
+	}
+	_, err := r.service.Spreadsheets.Values.
+		Update(r.spreadsheetID, writeRange, valueRange).
+		ValueInputOption("USER_ENTERED").
+		Context(ctx).
+		Do()
+	if err != nil {
+		return fmt.Errorf("failed to update reminder row %d: %w", rowIndex, err)
+	}
+
+	return nil
+}
+
+// ListDueReminders returns active reminders that can be sent at the provided time.
+func (r *GoogleSheetRepository) ListDueReminders(ctx context.Context, now time.Time) ([]Reminder, error) {
+	active, err := r.ListActiveReminders(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	due := make([]Reminder, 0, len(active))
+	for _, rem := range active {
+		copyRem := rem
+		if copyRem.CanSendNow(now) {
+			due = append(due, copyRem)
+		}
+	}
+	return due, nil
 }
 
 func (r *GoogleSheetRepository) nextDailyTransactionID(ctx context.Context, tabName string, when time.Time) (string, error) {

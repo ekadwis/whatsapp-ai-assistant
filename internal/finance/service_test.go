@@ -90,6 +90,30 @@ func (m *mockSheetRepository) InitNotesTab(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockSheetRepository) InitReminderTab(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockSheetRepository) AppendReminder(ctx context.Context, reminder *sheets.Reminder) error {
+	return nil
+}
+
+func (m *mockSheetRepository) ListActiveReminders(ctx context.Context) ([]sheets.Reminder, error) {
+	return nil, nil
+}
+
+func (m *mockSheetRepository) GetReminderByID(ctx context.Context, id string) (*sheets.Reminder, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockSheetRepository) UpdateReminder(ctx context.Context, rowIndex int, reminder *sheets.Reminder) error {
+	return nil
+}
+
+func (m *mockSheetRepository) ListDueReminders(ctx context.Context, now time.Time) ([]sheets.Reminder, error) {
+	return nil, nil
+}
+
 func TestRecordTransaction_Expense_Success(t *testing.T) {
 	repo := &mockSheetRepository{}
 	svc := NewFinanceService(repo, nil)
@@ -356,6 +380,30 @@ func (m *mockSheetRepositoryAdvanced) InitBudgetTab(ctx context.Context) error {
 
 func (m *mockSheetRepositoryAdvanced) InitNotesTab(ctx context.Context) error {
 	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) InitReminderTab(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) AppendReminder(ctx context.Context, reminder *sheets.Reminder) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) ListActiveReminders(ctx context.Context) ([]sheets.Reminder, error) {
+	return nil, nil
+}
+
+func (m *mockSheetRepositoryAdvanced) GetReminderByID(ctx context.Context, id string) (*sheets.Reminder, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockSheetRepositoryAdvanced) UpdateReminder(ctx context.Context, rowIndex int, reminder *sheets.Reminder) error {
+	return nil
+}
+
+func (m *mockSheetRepositoryAdvanced) ListDueReminders(ctx context.Context, now time.Time) ([]sheets.Reminder, error) {
+	return nil, nil
 }
 
 func TestGenerateReport_Periods(t *testing.T) {

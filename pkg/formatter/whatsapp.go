@@ -55,6 +55,9 @@ func FormatHelp() string {
 		"• /hapus [ID] — Hapus transaksi\n\n" +
 		"📝 *Catatan*\n" +
 		"• /notes [teks] — Simpan catatan cepat\n\n" +
+		"⏰ *Pengingat*\n" +
+		"• /reminder [teks] — Buat pengingat (contoh: /reminder tanggal 26 maret bayar vps)\n" +
+		"• /done [ID] — Tandai pengingat sudah selesai\n\n" +
 		"📂 *Lainnya*\n" +
 		"• /kategori — Lihat daftar kategori\n" +
 		"• /export — Dapatkan link Google Sheets\n" +

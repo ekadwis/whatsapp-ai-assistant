@@ -67,6 +67,24 @@ func (m *mockSheetRepo) InitBudgetTab(ctx context.Context) error {
 func (m *mockSheetRepo) InitNotesTab(ctx context.Context) error {
 	return nil
 }
+func (m *mockSheetRepo) InitReminderTab(ctx context.Context) error {
+	return nil
+}
+func (m *mockSheetRepo) AppendReminder(ctx context.Context, reminder *sheets.Reminder) error {
+	return nil
+}
+func (m *mockSheetRepo) ListActiveReminders(ctx context.Context) ([]sheets.Reminder, error) {
+	return nil, nil
+}
+func (m *mockSheetRepo) GetReminderByID(ctx context.Context, id string) (*sheets.Reminder, int, error) {
+	return nil, 0, nil
+}
+func (m *mockSheetRepo) UpdateReminder(ctx context.Context, rowIndex int, reminder *sheets.Reminder) error {
+	return nil
+}
+func (m *mockSheetRepo) ListDueReminders(ctx context.Context, now time.Time) ([]sheets.Reminder, error) {
+	return nil, nil
+}
 
 func TestHandleMessage_CommandPriorityOverLLM(t *testing.T) {
 	cmd := commands.NewRouter()

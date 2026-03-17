@@ -16,6 +16,7 @@ import (
 	"github.com/verssache/whatsapp-ai-assistant/internal/config"
 	"github.com/verssache/whatsapp-ai-assistant/internal/finance"
 	"github.com/verssache/whatsapp-ai-assistant/internal/notes"
+	"github.com/verssache/whatsapp-ai-assistant/internal/reminder"
 	"github.com/verssache/whatsapp-ai-assistant/internal/sheets"
 	"github.com/verssache/whatsapp-ai-assistant/internal/whatsapp"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -77,6 +78,8 @@ func main() {
 	llmClient := ai.NewLLMClient(cfg.LLMBaseURL, cfg.LLMApiKey, cfg.LLMModel)
 	financeService := finance.NewFinanceService(repo, llmClient)
 	notesService := notes.NewNotesService(repo)
+	messenger := whatsapp.NewWhatsAppClient(client)
+	reminderService := reminder.NewService(repo, messenger, cfg.OwnerPhoneNumber)
 
 	// 6) LLM preflight (fail fast)
 	if err := verifyLLMConnectivity(ctx, llmClient); err != nil {
@@ -84,7 +87,13 @@ func main() {
 	}
 	log.Println("✅ LLM preflight check passed")
 
-	// 7) Command router
+	// 7) Start reminder scheduler
+	if err := reminderService.Start(ctx); err != nil {
+		log.Fatalf("❌ Failed to start reminder service: %v", err)
+	}
+	log.Println("✅ Reminder scheduler started")
+
+	// 8) Command router
 	cmdRouter := commands.NewRouter()
 	cmdRouter.Register("/start", commands.StartHandler)
 	cmdRouter.Register("/help", commands.HelpHandler)
@@ -96,23 +105,25 @@ func main() {
 	cmdRouter.Register("/notes", commands.NewNotesHandlerFactory(notesService).Handler)
 	cmdRouter.Register("/edit", commands.NewEditHandlerFactory(financeService).Handler)
 	cmdRouter.Register("/hapus", commands.NewDeleteHandlerFactory(financeService).Handler)
+	cmdRouter.Register("/reminder", commands.NewReminderHandlerFactory(reminderService).Handler)
+	cmdRouter.Register("/done", commands.NewDoneHandlerFactory(reminderService).Handler)
 
-	// 8) App router
-	appRouter := app.NewAppRouter(cmdRouter, llmClient, financeService, notesService)
+	// 9) App router
+	appRouter := app.NewAppRouter(cmdRouter, llmClient, financeService, notesService, reminderService)
 
-	// 9) WhatsApp message handler registration
-	messenger := whatsapp.NewWhatsAppClient(client)
+	// 10) WhatsApp message handler registration
 	handler := whatsapp.NewHandler(messenger, cfg.OwnerPhoneNumber, appRouter.HandleMessage)
 	handler.Register(client)
 
 	log.Println("✅ Bot is running! Waiting for messages...")
 
-	// 10) Graceful shutdown
+	// 11) Graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
 	log.Println("⏳ Shutting down...")
+	reminderService.Stop()
 	client.Disconnect()
 	log.Println("✅ Bot stopped. Goodbye!")
 }

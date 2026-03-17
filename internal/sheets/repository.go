@@ -1,6 +1,9 @@
 package sheets
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // SheetRepository defines the contract for all Google Sheets persistence operations
 // used by finance, reporting, budget, and notes features.
@@ -50,4 +53,22 @@ type SheetRepository interface {
 
 	// InitNotesTab creates Notes tab structure.
 	InitNotesTab(ctx context.Context) error
+
+	// InitReminderTab creates Reminder tab structure.
+	InitReminderTab(ctx context.Context) error
+
+	// AppendReminder adds a reminder row to Reminder tab.
+	AppendReminder(ctx context.Context, reminder *Reminder) error
+
+	// ListActiveReminders returns reminders that are active (not completed/paused).
+	ListActiveReminders(ctx context.Context) ([]Reminder, error)
+
+	// GetReminderByID finds one reminder and returns reminder + row index.
+	GetReminderByID(ctx context.Context, id string) (*Reminder, int, error)
+
+	// UpdateReminder updates reminder row at a specific index.
+	UpdateReminder(ctx context.Context, rowIndex int, reminder *Reminder) error
+
+	// ListDueReminders returns reminders eligible to be sent at current time.
+	ListDueReminders(ctx context.Context, now time.Time) ([]Reminder, error)
 }

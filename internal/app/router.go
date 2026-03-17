@@ -14,6 +14,8 @@ import (
 	"github.com/verssache/whatsapp-ai-assistant/internal/commands"
 	"github.com/verssache/whatsapp-ai-assistant/internal/finance"
 	"github.com/verssache/whatsapp-ai-assistant/internal/notes"
+	"github.com/verssache/whatsapp-ai-assistant/internal/reminder"
+	"github.com/verssache/whatsapp-ai-assistant/internal/sheets"
 	"github.com/verssache/whatsapp-ai-assistant/pkg/formatter"
 )
 
@@ -53,10 +55,11 @@ type transactionExecResult struct {
 }
 
 type AppRouter struct {
-	cmdRouter      *commands.Router
-	llmClient      *ai.LLMClient
-	financeService *finance.FinanceService
-	notesService   *notes.NotesService
+	cmdRouter        *commands.Router
+	llmClient        *ai.LLMClient
+	financeService   *finance.FinanceService
+	notesService     *notes.NotesService
+	reminderService  *reminder.Service
 
 	pendingActions sync.Map // map[string]*PendingAction
 	pendingTTL     time.Duration
@@ -68,14 +71,21 @@ func NewAppRouter(
 	llmClient *ai.LLMClient,
 	financeService *finance.FinanceService,
 	notesService *notes.NotesService,
+	reminderService ...*reminder.Service,
 ) *AppRouter {
+	var remSvc *reminder.Service
+	if len(reminderService) > 0 {
+		remSvc = reminderService[0]
+	}
+
 	return &AppRouter{
-		cmdRouter:      cmdRouter,
-		llmClient:      llmClient,
-		financeService: financeService,
-		notesService:   notesService,
-		pendingTTL:     defaultPendingTTL,
-		systemPrompt:   defaultSystemPrompt,
+		cmdRouter:       cmdRouter,
+		llmClient:       llmClient,
+		financeService:  financeService,
+		notesService:    notesService,
+		reminderService: remSvc,
+		pendingTTL:      defaultPendingTTL,
+		systemPrompt:    defaultSystemPrompt,
 	}
 }
 
@@ -117,6 +127,13 @@ func (r *AppRouter) HandleMessage(ctx context.Context, sender string, text strin
 	if r.cmdRouter != nil {
 		if response, matched := r.cmdRouter.Route(ctx, text); matched {
 			return response
+		}
+	}
+
+	// 2.5) Optional natural reminder intent routing (before LLM).
+	if r.reminderService != nil {
+		if resp, handled := r.tryHandleNaturalReminder(ctx, text); handled {
+			return resp
 		}
 	}
 
@@ -215,14 +232,25 @@ func (r *AppRouter) handleToolCalls(ctx context.Context, sender string, calls []
 			responses = append(responses, formatter.FormatBudgetSet(args.Category, args.Amount))
 
 		case "save_note":
-			if r.notesService == nil {
-				responses = append(responses, formatter.FormatError("Service catatan belum siap."))
-				continue
-			}
-
 			var args ai.SaveNoteArgs
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
 				responses = append(responses, formatter.FormatError("Format data catatan tidak valid."))
+				continue
+			}
+
+			// If LLM routes reminder-like text to save_note, upgrade it to reminder flow.
+			if r.reminderService != nil && isReminderIntent(args.Content) {
+				rem, err := r.reminderService.CreateFromText(ctx, args.Content)
+				if err != nil {
+					responses = append(responses, formatter.FormatError("Gagal membuat reminder: "+err.Error()))
+					continue
+				}
+				responses = append(responses, formatReminderCreatedMessage(rem))
+				continue
+			}
+
+			if r.notesService == nil {
+				responses = append(responses, formatter.FormatError("Service catatan belum siap."))
 				continue
 			}
 
@@ -430,6 +458,68 @@ func withThousandDotsCompact(s string) string {
 		b.WriteString(s[i : i+3])
 	}
 	return b.String()
+}
+
+
+
+func (r *AppRouter) tryHandleNaturalReminder(ctx context.Context, text string) (string, bool) {
+	if r == nil || r.reminderService == nil {
+		return "", false
+	}
+	if !isReminderIntent(text) {
+		return "", false
+	}
+
+	rem, err := r.reminderService.CreateFromText(ctx, text)
+	if err != nil {
+		return formatter.FormatError("Gagal membuat reminder: " + err.Error()), true
+	}
+	return formatReminderCreatedMessage(rem), true
+}
+
+func isReminderIntent(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if t == "" {
+		return false
+	}
+
+	keywords := []string{
+		"ingetin",
+		"ingatkan",
+		"pengingat",
+		"reminder",
+		"jangan lupa",
+		"tolong ingatkan",
+	}
+	for _, k := range keywords {
+		if strings.Contains(t, k) {
+			return true
+		}
+	}
+	return false
+}
+
+func formatReminderCreatedMessage(rem *sheets.Reminder) string {
+	if rem == nil {
+		return formatter.FormatError("Reminder tidak valid.")
+	}
+
+	targetDate := rem.TargetDate.Format("02 Jan 2006")
+	targetTime := rem.TargetTime
+	if targetTime == "" {
+		targetTime = "tanpa jam spesifik (3x/hari sampai selesai)"
+	} else {
+		targetTime += " WIB"
+	}
+
+	return fmt.Sprintf(
+		"✅ *Pengingat disimpan!*\n\n🆔 ID: %s\n🗓️ Tanggal: %s\n🕒 Waktu: %s\n📝 %s\n\nJika sudah dilakukan, kirim: */done %s*",
+		rem.ID,
+		targetDate,
+		targetTime,
+		rem.Message,
+		rem.ID,
+	)
 }
 
 func normalizeReportPeriod(raw string, fallback string) string {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/verssache/whatsapp-ai-assistant/internal/finance"
 	"github.com/verssache/whatsapp-ai-assistant/internal/notes"
+	"github.com/verssache/whatsapp-ai-assistant/internal/reminder"
 	"github.com/verssache/whatsapp-ai-assistant/pkg/formatter"
 )
 
@@ -206,6 +207,79 @@ func (f *DeleteHandlerFactory) Handler(ctx context.Context, args string) string 
 	}
 
 	return formatter.FormatTransactionDeleted(id)
+}
+
+type ReminderHandlerFactory struct {
+	reminder *reminder.Service
+}
+
+func NewReminderHandlerFactory(svc *reminder.Service) *ReminderHandlerFactory {
+	return &ReminderHandlerFactory{reminder: svc}
+}
+
+func (f *ReminderHandlerFactory) Handler(ctx context.Context, args string) string {
+	if f == nil || f.reminder == nil {
+		return formatter.FormatError("service reminder belum siap")
+	}
+
+	content := strings.TrimSpace(args)
+	if content == "" {
+		return formatter.FormatError("Format: /reminder [teks]\nContoh: /reminder tanggal 26 maret bayar vps contabo")
+	}
+
+	rem, err := f.reminder.CreateFromText(ctx, content)
+	if err != nil {
+		return formatter.FormatError("Gagal membuat reminder: " + err.Error())
+	}
+
+	targetDate := rem.TargetDate.Format("02 Jan 2006")
+	targetTime := rem.TargetTime
+	if targetTime == "" {
+		targetTime = "tanpa jam spesifik (diingatkan 3x/hari sampai selesai)"
+	} else {
+		targetTime += " WIB"
+	}
+
+	return fmt.Sprintf(
+		"✅ *Pengingat disimpan!*\n\n🆔 ID: %s\n🗓️ Tanggal: %s\n🕒 Waktu: %s\n📝 %s\n\nJika sudah dilakukan, kirim: */done %s*",
+		rem.ID,
+		targetDate,
+		targetTime,
+		rem.Message,
+		rem.ID,
+	)
+}
+
+type DoneHandlerFactory struct {
+	reminder *reminder.Service
+}
+
+func NewDoneHandlerFactory(svc *reminder.Service) *DoneHandlerFactory {
+	return &DoneHandlerFactory{reminder: svc}
+}
+
+func (f *DoneHandlerFactory) Handler(ctx context.Context, args string) string {
+	if f == nil || f.reminder == nil {
+		return formatter.FormatError("service reminder belum siap")
+	}
+
+	parts := strings.Fields(strings.TrimSpace(args))
+	if len(parts) < 1 {
+		return formatter.FormatError("Format: /done [ID]\nContoh: /done RMD-20260318-090000-001")
+	}
+
+	id := parts[0]
+	note := ""
+	if len(parts) > 1 {
+		note = strings.Join(parts[1:], " ")
+	}
+
+	rem, err := f.reminder.CompleteByID(ctx, id, note)
+	if err != nil {
+		return formatter.FormatError("Gagal menyelesaikan reminder: " + err.Error())
+	}
+
+	return fmt.Sprintf("✅ Reminder *%s* ditandai selesai.\n📝 %s", rem.ID, rem.Message)
 }
 
 func isValidExpenseCategory(category string) bool {
