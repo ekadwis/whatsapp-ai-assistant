@@ -539,3 +539,106 @@ func TestEditAndDeleteTransaction(t *testing.T) {
 		t.Fatalf("unexpected delete target: tab=%q row=%d", repo.lastDeleteTab, repo.lastDeleteRow)
 	}
 }
+
+func TestNormalizeCategoryForType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		txType  sheets.TransactionType
+		want    string
+	}{
+		{
+			name:   "expense alias makanan dan minuman",
+			input:  "Makanan & Minuman",
+			txType: sheets.Expense,
+			want:   "Makanan",
+		},
+		{
+			name:   "expense canonical case-insensitive",
+			input:  "transportasi",
+			txType: sheets.Expense,
+			want:   "Transportasi",
+		},
+		{
+			name:   "expense unknown fallback",
+			input:  "Kategori Bebas",
+			txType: sheets.Expense,
+			want:   "Lainnya",
+		},
+		{
+			name:   "income canonical case-insensitive",
+			input:  "freelance",
+			txType: sheets.Income,
+			want:   "Freelance",
+		},
+		{
+			name:   "income unknown fallback",
+			input:  "Makanan",
+			txType: sheets.Income,
+			want:   "Lainnya",
+		},
+		{
+			name:   "empty fallback",
+			input:  "   ",
+			txType: sheets.Expense,
+			want:   "Lainnya",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := normalizeCategoryForType(tc.input, tc.txType)
+			if got != tc.want {
+				t.Fatalf("normalizeCategoryForType(%q, %q) = %q, want %q", tc.input, tc.txType, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNextTransactionIDFromSheet(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 17, 9, 0, 0, 0, sheets.WIB)
+
+	t.Run("increments from max existing counter for same date", func(t *testing.T) {
+		repo := &mockSheetRepositoryAdvanced{
+			transactions: []sheets.Transaction{
+				{ID: "20260317-001"},
+				{ID: "20260317-010"},
+				{ID: "20260316-999"}, // different date, ignored
+				{ID: "invalid-id"},   // malformed, ignored
+			},
+		}
+		svc := NewFinanceService(repo, nil)
+
+		got, err := svc.nextTransactionIDFromSheet(context.Background(), now)
+		if err != nil {
+			t.Fatalf("nextTransactionIDFromSheet returned error: %v", err)
+		}
+		if got != "20260317-011" {
+			t.Fatalf("expected ID %q, got %q", "20260317-011", got)
+		}
+	})
+
+	t.Run("starts at 001 when no existing transaction for date", func(t *testing.T) {
+		repo := &mockSheetRepositoryAdvanced{
+			transactions: []sheets.Transaction{
+				{ID: "20260316-003"},
+			},
+		}
+		svc := NewFinanceService(repo, nil)
+
+		got, err := svc.nextTransactionIDFromSheet(context.Background(), now)
+		if err != nil {
+			t.Fatalf("nextTransactionIDFromSheet returned error: %v", err)
+		}
+		if got != "20260317-001" {
+			t.Fatalf("expected ID %q, got %q", "20260317-001", got)
+		}
+	})
+}

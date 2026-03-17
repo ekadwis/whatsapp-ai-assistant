@@ -28,6 +28,25 @@ var monthNamesID = map[time.Month]string{
 	time.December:  "Desember",
 }
 
+var expenseCategoriesCanonical = []string{
+	"Makanan", "Transportasi", "Rumah Tangga", "Belanja",
+	"Kesehatan", "Pendidikan", "Hiburan", "Fashion",
+	"Komunikasi", "Perawatan", "Sosial", "Lainnya",
+}
+
+var incomeCategoriesCanonical = []string{
+	"Gaji", "Freelance", "Investasi", "Hadiah", "Transfer", "Lainnya",
+}
+
+var categoryAliases = map[string]string{
+	"makanan & minuman": "Makanan",
+	"makanan dan minuman": "Makanan",
+	"food & beverage": "Makanan",
+	"food and beverage": "Makanan",
+	"f&b": "Makanan",
+	"makan minum": "Makanan",
+}
+
 type FinanceService struct {
 	repo sheets.SheetRepository
 	ai   *ai.LLMClient
@@ -87,11 +106,18 @@ func (s *FinanceService) RecordTransactionWithBudget(ctx context.Context, args *
 		return nil, "", fmt.Errorf("failed to ensure tab %q: %w", tabName, err)
 	}
 
+	txType := toTransactionType(args.Type)
+
+	txID, err := s.nextTransactionIDFromSheet(ctx, now)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate transaction ID: %w", err)
+	}
+
 	tx := &sheets.Transaction{
-		ID:          sheets.GenerateTransactionID(now),
+		ID:          txID,
 		Date:        now,
-		Type:        toTransactionType(args.Type),
-		Category:    strings.TrimSpace(args.Category),
+		Type:        txType,
+		Category:    normalizeCategoryForType(args.Category, txType),
 		Description: strings.TrimSpace(args.Description),
 		Amount:      args.Amount,
 	}
@@ -129,7 +155,7 @@ func (s *FinanceService) CheckBudget(ctx context.Context, category string) (stri
 	if s == nil || s.repo == nil {
 		return "", fmt.Errorf("sheet repository is nil")
 	}
-	category = strings.TrimSpace(category)
+	category = normalizeCategoryForType(category, sheets.Expense)
 	if category == "" {
 		return "", nil
 	}
@@ -189,7 +215,8 @@ func (s *FinanceService) GenerateReport(ctx context.Context, period string) (*Re
 			continue
 		}
 		report.TotalExpense += tx.Amount
-		report.Categories[tx.Category] += tx.Amount
+		normalizedCategory := normalizeCategoryForType(tx.Category, sheets.Expense)
+		report.Categories[normalizedCategory] += tx.Amount
 	}
 
 	report.Categories = topNCategories(report.Categories, 5)
@@ -229,7 +256,7 @@ func (s *FinanceService) EditTransaction(ctx context.Context, id, field, value s
 		}
 		tx.Amount = amount
 	case "kategori", "category":
-		tx.Category = value
+		tx.Category = normalizeCategoryForType(value, tx.Type)
 	case "deskripsi", "description":
 		tx.Description = value
 	default:
@@ -281,6 +308,39 @@ func toTransactionType(raw string) sheets.TransactionType {
 		return sheets.Income
 	}
 	return sheets.Expense
+}
+
+func (s *FinanceService) nextTransactionIDFromSheet(ctx context.Context, now time.Time) (string, error) {
+	tabName := tabNameForTime(now)
+	txs, err := s.repo.GetTransactions(ctx, tabName)
+	if err != nil {
+		return "", err
+	}
+
+	datePrefix := now.In(sheets.WIB).Format("20060102") + "-"
+	maxCounter := 0
+
+	for _, tx := range txs {
+		id := strings.TrimSpace(tx.ID)
+		if !strings.HasPrefix(id, datePrefix) {
+			continue
+		}
+
+		parts := strings.Split(id, "-")
+		if len(parts) != 2 {
+			continue
+		}
+
+		counter, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
+		if counter > maxCounter {
+			maxCounter = counter
+		}
+	}
+
+	return fmt.Sprintf("%s%03d", datePrefix, maxCounter+1), nil
 }
 
 func normalizePeriod(period string) string {
@@ -359,6 +419,33 @@ func formatDateID(t time.Time) string {
 	local := t.In(sheets.WIB)
 	month := monthNamesID[local.Month()]
 	return fmt.Sprintf("%02d %s %d", local.Day(), month, local.Year())
+}
+
+func normalizeCategoryForType(raw string, txType sheets.TransactionType) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "Lainnya"
+	}
+
+	key := strings.ToLower(s)
+	if alias, ok := categoryAliases[key]; ok {
+		s = alias
+	}
+
+	var canonical []string
+	if txType == sheets.Income {
+		canonical = incomeCategoriesCanonical
+	} else {
+		canonical = expenseCategoriesCanonical
+	}
+
+	for _, c := range canonical {
+		if strings.EqualFold(c, s) {
+			return c
+		}
+	}
+
+	return "Lainnya"
 }
 
 func parseIDRAmountLocal(s string) (float64, error) {
