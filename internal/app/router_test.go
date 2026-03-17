@@ -227,3 +227,69 @@ func TestHandleMessage_RecordTransactionToolCallExecutesImmediately(t *testing.T
 		t.Fatal("expected no pending confirmation after immediate execution")
 	}
 }
+
+func TestHandleMessage_MultipleRecordTransactionToolCalls(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices": [{
+				"message": {
+					"content": "",
+					"tool_calls": [
+						{
+							"id": "call_1",
+							"type": "function",
+							"function": {
+								"name": "record_transaction",
+								"arguments": "{\"type\":\"expense\",\"amount\":10000,\"category\":\"Makanan\",\"description\":\"beli cimol\"}"
+							}
+						},
+						{
+							"id": "call_2",
+							"type": "function",
+							"function": {
+								"name": "record_transaction",
+								"arguments": "{\"type\":\"expense\",\"amount\":10000,\"category\":\"Makanan\",\"description\":\"beli bakso bakar\"}"
+							}
+						},
+						{
+							"id": "call_3",
+							"type": "function",
+							"function": {
+								"name": "record_transaction",
+								"arguments": "{\"type\":\"expense\",\"amount\":24000,\"category\":\"Belanja\",\"description\":\"belanja sayur\"}"
+							}
+						}
+					]
+				}
+			}]
+		}`))
+	}))
+	defer srv.Close()
+
+	repo := &mockSheetRepo{}
+	fin := finance.NewFinanceService(repo, nil)
+	noteSvc := notes.NewNotesService(repo)
+	llm := ai.NewLLMClient(srv.URL, "test-key", "test-model")
+
+	r := NewAppRouter(commands.NewRouter(), llm, fin, noteSvc)
+
+	got := r.HandleMessage(context.Background(), "628123", "beli cimol 10k, beli bakso bakar 10k, belanja sayur 24k")
+
+	if repo.appendCalls != 3 {
+		t.Fatalf("expected 3 transactions appended, got %d", repo.appendCalls)
+	}
+	if repo.ensureCalls != 3 {
+		t.Fatalf("expected EnsureTabExists called 3 times, got %d", repo.ensureCalls)
+	}
+
+	if !strings.Contains(got, "beli cimol") {
+		t.Fatalf("expected response to include first transaction, got %q", got)
+	}
+	if !strings.Contains(got, "beli bakso bakar") {
+		t.Fatalf("expected response to include second transaction, got %q", got)
+	}
+	if !strings.Contains(got, "belanja sayur") {
+		t.Fatalf("expected response to include third transaction, got %q", got)
+	}
+}

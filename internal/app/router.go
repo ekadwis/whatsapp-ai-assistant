@@ -132,103 +132,127 @@ func (r *AppRouter) HandleMessage(ctx context.Context, sender string, text strin
 }
 
 func (r *AppRouter) handleToolCalls(ctx context.Context, sender string, calls []ai.ToolCall) string {
+	_ = sender
+
+	var responses []string
+
 	for _, call := range calls {
 		switch call.Name {
 		case "record_transaction":
 			var args ai.RecordTransactionArgs
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return formatter.FormatError("Format data transaksi tidak valid.")
+				responses = append(responses, formatter.FormatError("Format data transaksi tidak valid."))
+				continue
 			}
-			return r.executeTransaction(ctx, &args)
+			responses = append(responses, r.executeTransaction(ctx, &args))
 
 		case "get_report":
 			if r.financeService == nil {
-				return formatter.FormatError("Service laporan belum siap.")
+				responses = append(responses, formatter.FormatError("Service laporan belum siap."))
+				continue
 			}
 
 			var args ai.GetReportArgs
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return formatter.FormatError("Format data laporan tidak valid.")
+				responses = append(responses, formatter.FormatError("Format data laporan tidak valid."))
+				continue
 			}
 
 			report, err := r.financeService.GenerateReport(ctx, args.Period)
 			if err != nil {
-				return formatter.FormatError(err.Error())
+				responses = append(responses, formatter.FormatError(err.Error()))
+				continue
 			}
 
 			switch normalizeReportPeriod(args.Period, report.Period) {
 			case "weekly":
-				return formatter.FormatWeeklyReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories)
+				responses = append(responses, formatter.FormatWeeklyReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories))
 			case "monthly":
-				return formatter.FormatMonthlyReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories)
+				responses = append(responses, formatter.FormatMonthlyReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories))
 			default:
-				return formatter.FormatDailyReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories)
+				responses = append(responses, formatter.FormatDailyReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories))
 			}
 
 		case "set_budget":
 			if r.financeService == nil {
-				return formatter.FormatError("Service budget belum siap.")
+				responses = append(responses, formatter.FormatError("Service budget belum siap."))
+				continue
 			}
 
 			var args ai.SetBudgetArgs
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return formatter.FormatError("Format data budget tidak valid.")
+				responses = append(responses, formatter.FormatError("Format data budget tidak valid."))
+				continue
 			}
 
 			if err := r.financeService.SetBudget(ctx, args.Category, args.Amount); err != nil {
-				return formatter.FormatError(err.Error())
+				responses = append(responses, formatter.FormatError(err.Error()))
+				continue
 			}
-			return formatter.FormatBudgetSet(args.Category, args.Amount)
+			responses = append(responses, formatter.FormatBudgetSet(args.Category, args.Amount))
 
 		case "save_note":
 			if r.notesService == nil {
-				return formatter.FormatError("Service catatan belum siap.")
+				responses = append(responses, formatter.FormatError("Service catatan belum siap."))
+				continue
 			}
 
 			var args ai.SaveNoteArgs
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return formatter.FormatError("Format data catatan tidak valid.")
+				responses = append(responses, formatter.FormatError("Format data catatan tidak valid."))
+				continue
 			}
 
 			if err := r.notesService.SaveNote(ctx, args.Content); err != nil {
-				return formatter.FormatError(err.Error())
+				responses = append(responses, formatter.FormatError(err.Error()))
+				continue
 			}
-			return formatter.FormatNoteSaved(args.Content)
+			responses = append(responses, formatter.FormatNoteSaved(args.Content))
 
 		case "edit_transaction":
 			if r.financeService == nil {
-				return formatter.FormatError("Service edit belum siap.")
+				responses = append(responses, formatter.FormatError("Service edit belum siap."))
+				continue
 			}
 
 			var args ai.EditTransactionArgs
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return formatter.FormatError("Format data edit tidak valid.")
+				responses = append(responses, formatter.FormatError("Format data edit tidak valid."))
+				continue
 			}
 
 			_, err := r.financeService.EditTransaction(ctx, args.ID, args.Field, args.Value)
 			if err != nil {
-				return formatter.FormatError(err.Error())
+				responses = append(responses, formatter.FormatError(err.Error()))
+				continue
 			}
-			return formatter.FormatTransactionEdited(args.ID, args.Field, "", args.Value)
+			responses = append(responses, formatter.FormatTransactionEdited(args.ID, args.Field, "", args.Value))
 
 		case "delete_transaction":
 			if r.financeService == nil {
-				return formatter.FormatError("Service hapus belum siap.")
+				responses = append(responses, formatter.FormatError("Service hapus belum siap."))
+				continue
 			}
 
 			var args ai.DeleteTransactionArgs
 			if err := json.Unmarshal(call.Arguments, &args); err != nil {
-				return formatter.FormatError("Format data hapus tidak valid.")
+				responses = append(responses, formatter.FormatError("Format data hapus tidak valid."))
+				continue
 			}
 
 			if err := r.financeService.DeleteTransaction(ctx, args.ID); err != nil {
-				return formatter.FormatError(err.Error())
+				responses = append(responses, formatter.FormatError(err.Error()))
+				continue
 			}
-			return formatter.FormatTransactionDeleted(args.ID)
+			responses = append(responses, formatter.FormatTransactionDeleted(args.ID))
 		}
 	}
 
-	return formatter.FormatError("Tidak dapat memproses permintaan.")
+	if len(responses) == 0 {
+		return formatter.FormatError("Tidak dapat memproses permintaan.")
+	}
+
+	return strings.Join(responses, "\n\n")
 }
 
 func (r *AppRouter) executeTransaction(ctx context.Context, args *ai.RecordTransactionArgs) string {
