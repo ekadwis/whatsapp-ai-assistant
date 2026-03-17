@@ -39,10 +39,11 @@ type ParsedReminder struct {
 }
 
 var (
-	reDateTag = regexp.MustCompile(`(?i)\b(?:tgl|tanggal)\s+(\d{1,2})\s+([a-zA-Z]+)(?:\s+(\d{4}))?\b`)
-	reDateRaw = regexp.MustCompile(`(?i)\b(\d{1,2})\s+([a-zA-Z]+)(?:\s+(\d{4}))?\b`)
-	reTime    = regexp.MustCompile(`(?i)\b(?:jam|pukul)\s+(\d{1,2})(?:[:.](\d{2}))?\b`)
-	reSpaces  = regexp.MustCompile(`\s+`)
+	reDateTag     = regexp.MustCompile(`(?i)\b(?:tgl|tanggal)\s+(\d{1,2})\s+([a-zA-Z]+)(?:\s+(\d{4}))?\b`)
+	reDateRaw     = regexp.MustCompile(`(?i)\b(\d{1,2})\s+([a-zA-Z]+)(?:\s+(\d{4}))?\b`)
+	reTime        = regexp.MustCompile(`(?i)\b(?:jam|pukul)\s+(\d{1,2})(?:[:.](\d{2}))?\b`)
+	reSpaces      = regexp.MustCompile(`\s+`)
+	reNonWordLike = regexp.MustCompile(`[^a-z0-9\s]+`)
 )
 
 var idCounter atomic.Uint64
@@ -185,6 +186,161 @@ func (s *Service) CompleteByID(ctx context.Context, id string, note string) (*sh
 		return nil, fmt.Errorf("failed to mark reminder as completed: %w", err)
 	}
 	return rem, nil
+}
+
+// TryCompleteFromText tries to mark a reminder as completed from natural chat text.
+// Example accepted intents:
+// - "gw udah cuci mobil"
+// - "sudah bayar vps"
+// - "beres urus pajak"
+//
+// Returns:
+// - reminder: completed reminder when matched
+// - matched: whether the text looked like a completion intent and was matched
+// - error: operational error (repo/update/etc)
+func (s *Service) TryCompleteFromText(ctx context.Context, text string) (*sheets.Reminder, bool, error) {
+	if s == nil || s.repo == nil {
+		return nil, false, fmt.Errorf("reminder service is not ready")
+	}
+
+	intentText, ok := extractCompletionIntent(text)
+	if !ok {
+		return nil, false, nil
+	}
+
+	active, err := s.repo.ListActiveReminders(ctx)
+	if err != nil {
+		return nil, true, fmt.Errorf("failed to list active reminders: %w", err)
+	}
+	if len(active) == 0 {
+		return nil, true, nil
+	}
+
+	best := chooseBestReminder(intentText, active)
+	if best == nil {
+		return nil, true, nil
+	}
+
+	note := "auto completed from chat: " + strings.TrimSpace(text)
+	done, err := s.CompleteByID(ctx, best.ID, note)
+	if err != nil {
+		return nil, true, err
+	}
+	return done, true, nil
+}
+
+func extractCompletionIntent(text string) (string, bool) {
+	raw := strings.ToLower(strings.TrimSpace(text))
+	if raw == "" {
+		return "", false
+	}
+
+	prefixes := []string{
+		"gw udah",
+		"gue udah",
+		"aku udah",
+		"saya udah",
+		"sudah",
+		"udah",
+		"beres",
+		"selesai",
+		"kelar",
+		"done",
+		"sudah kelar",
+		"udah kelar",
+	}
+
+	for _, p := range prefixes {
+		if strings.HasPrefix(raw, p) {
+			intent := strings.TrimSpace(strings.TrimPrefix(raw, p))
+			intent = normalizeIntentText(intent)
+			if intent == "" {
+				return "", false
+			}
+			return intent, true
+		}
+	}
+	return "", false
+}
+
+func chooseBestReminder(intent string, reminders []sheets.Reminder) *sheets.Reminder {
+	intentTokens := tokenSet(intent)
+	if len(intentTokens) == 0 {
+		return nil
+	}
+
+	var best *sheets.Reminder
+	bestScore := 0.0
+
+	for i := range reminders {
+		r := reminders[i]
+		if r.Status != sheets.ReminderStatusActive {
+			continue
+		}
+
+		msg := normalizeIntentText(r.Message)
+		msgTokens := tokenSet(msg)
+		if len(msgTokens) == 0 {
+			continue
+		}
+
+		score := overlapScore(intentTokens, msgTokens)
+		if score <= 0 {
+			continue
+		}
+
+		// Prefer reminders with target date closest to now (small bias)
+		// so recent/near reminders win on tie.
+		if score > bestScore {
+			bestScore = score
+			best = &reminders[i]
+		}
+	}
+
+	// Minimum confidence threshold to avoid wrong completion.
+	// 0.34 ~= at least one-third token overlap.
+	if bestScore < 0.34 {
+		return nil
+	}
+	return best
+}
+
+func normalizeIntentText(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = reNonWordLike.ReplaceAllString(s, " ")
+	s = reSpaces.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
+
+func tokenSet(s string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, t := range strings.Fields(s) {
+		// drop tiny/noisy tokens
+		if len(t) <= 2 {
+			continue
+		}
+		out[t] = struct{}{}
+	}
+	return out
+}
+
+func overlapScore(a, b map[string]struct{}) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+
+	inter := 0
+	for k := range a {
+		if _, ok := b[k]; ok {
+			inter++
+		}
+	}
+	if inter == 0 {
+		return 0
+	}
+
+	// Dice coefficient: 2*|A∩B| / (|A|+|B|)
+	return (2.0 * float64(inter)) / float64(len(a)+len(b))
 }
 
 func (s *Service) ProcessDueReminders(ctx context.Context) (int, error) {
@@ -406,9 +562,10 @@ func formatReminderPing(rem sheets.Reminder, now time.Time) string {
 	}
 
 	return fmt.Sprintf(
-		"⏰ *Pengingat*\n🆔 %s\n🗓️ Target: %s\n📝 %s\n\nJika sudah selesai, balas:\n*/done %s*",
+		"⏰ *Pengingat*\n🆔 %s\n🗓️ Target: %s\n📝 %s\n\nKalau sudah dilakukan, kamu bisa balas natural (contoh: \"gw udah %s\") atau pakai:\n*/done %s*",
 		rem.ID,
 		when,
+		rem.Message,
 		rem.Message,
 		rem.ID,
 	)
