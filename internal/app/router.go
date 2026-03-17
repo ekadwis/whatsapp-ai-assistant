@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +41,15 @@ TOOLS YANG TERSEDIA:
 type PendingAction struct {
 	Transaction *ai.RecordTransactionArgs
 	CreatedAt   time.Time
+}
+
+type transactionExecResult struct {
+	ID          string
+	Description string
+	Category    string
+	Amount      float64
+	IsIncome    bool
+	When        time.Time
 }
 
 type AppRouter struct {
@@ -135,6 +147,8 @@ func (r *AppRouter) handleToolCalls(ctx context.Context, sender string, calls []
 	_ = sender
 
 	var responses []string
+	var txResults []transactionExecResult
+	var budgetAlerts []string
 
 	for _, call := range calls {
 		switch call.Name {
@@ -144,7 +158,16 @@ func (r *AppRouter) handleToolCalls(ctx context.Context, sender string, calls []
 				responses = append(responses, formatter.FormatError("Format data transaksi tidak valid."))
 				continue
 			}
-			responses = append(responses, r.executeTransaction(ctx, &args))
+
+			result, budgetAlert, err := r.executeTransactionResult(ctx, &args)
+			if err != nil {
+				responses = append(responses, formatter.FormatError("Gagal mencatat: "+err.Error()))
+				continue
+			}
+			txResults = append(txResults, result)
+			if strings.TrimSpace(budgetAlert) != "" {
+				budgetAlerts = append(budgetAlerts, budgetAlert)
+			}
 
 		case "get_report":
 			if r.financeService == nil {
@@ -248,6 +271,14 @@ func (r *AppRouter) handleToolCalls(ctx context.Context, sender string, calls []
 		}
 	}
 
+	if len(txResults) > 0 {
+		responses = append([]string{formatCompactTransactionSummary(txResults)}, responses...)
+	}
+
+	if len(budgetAlerts) > 0 {
+		responses = append(responses, strings.Join(budgetAlerts, "\n\n"))
+	}
+
 	if len(responses) == 0 {
 		return formatter.FormatError("Tidak dapat memproses permintaan.")
 	}
@@ -256,29 +287,129 @@ func (r *AppRouter) handleToolCalls(ctx context.Context, sender string, calls []
 }
 
 func (r *AppRouter) executeTransaction(ctx context.Context, args *ai.RecordTransactionArgs) string {
-	if r.financeService == nil {
-		return formatter.FormatError("Service transaksi belum siap.")
-	}
-	if args == nil {
-		return formatter.FormatError("Data transaksi kosong.")
-	}
-
-	tx, budgetAlert, err := r.financeService.RecordTransactionWithBudget(ctx, args)
+	result, budgetAlert, err := r.executeTransactionResult(ctx, args)
 	if err != nil {
 		return formatter.FormatError("Gagal mencatat: " + err.Error())
 	}
 
 	var response string
-	if strings.EqualFold(strings.TrimSpace(args.Type), "income") {
-		response = formatter.FormatIncomeRecorded(tx.ID, tx.Description, tx.Category, tx.Amount)
+	if result.IsIncome {
+		response = formatter.FormatIncomeRecorded(result.ID, result.Description, result.Category, result.Amount)
 	} else {
-		response = formatter.FormatExpenseRecorded(tx.ID, tx.Description, tx.Category, tx.Amount)
+		response = formatter.FormatExpenseRecorded(result.ID, result.Description, result.Category, result.Amount)
 	}
 
 	if strings.TrimSpace(budgetAlert) != "" {
 		response += "\n\n" + budgetAlert
 	}
 	return response
+}
+
+func (r *AppRouter) executeTransactionResult(ctx context.Context, args *ai.RecordTransactionArgs) (transactionExecResult, string, error) {
+	if r.financeService == nil {
+		return transactionExecResult{}, "", fmt.Errorf("service transaksi belum siap")
+	}
+	if args == nil {
+		return transactionExecResult{}, "", fmt.Errorf("data transaksi kosong")
+	}
+
+	tx, budgetAlert, err := r.financeService.RecordTransactionWithBudget(ctx, args)
+	if err != nil {
+		return transactionExecResult{}, "", err
+	}
+
+	return transactionExecResult{
+		ID:          tx.ID,
+		Description: tx.Description,
+		Category:    tx.Category,
+		Amount:      tx.Amount,
+		IsIncome:    strings.EqualFold(strings.TrimSpace(args.Type), "income"),
+		When:        tx.Date,
+	}, budgetAlert, nil
+}
+
+func formatCompactTransactionSummary(results []transactionExecResult) string {
+	if len(results) == 0 {
+		return formatter.FormatError("Tidak ada transaksi yang dapat ditampilkan.")
+	}
+
+	allIncome := true
+	allExpense := true
+	for _, r := range results {
+		if r.IsIncome {
+			allExpense = false
+		} else {
+			allIncome = false
+		}
+	}
+
+	title := "✅ *Transaksi Dicatat!*"
+	if allExpense {
+		title = "✅ *Pengeluaran Dicatat!*"
+	} else if allIncome {
+		title = "✅ *Pemasukan Dicatat!*"
+	}
+
+	var b strings.Builder
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	for i, item := range results {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("🆔 ID: ")
+		b.WriteString(item.ID)
+		b.WriteString("\n📝 Deskripsi: ")
+		b.WriteString(item.Description)
+		b.WriteString("\n📂 Kategori: ")
+		b.WriteString(item.Category)
+		b.WriteString("\n💰 Jumlah: ")
+		b.WriteString(formatIDRCompact(item.Amount))
+	}
+
+	last := results[len(results)-1].When.In(time.FixedZone("WIB", 7*60*60))
+	b.WriteString("\n\n📅 ")
+	b.WriteString(last.Format("02 Jan 2006, 15:04 WIB"))
+
+	return b.String()
+}
+
+func formatIDRCompact(amount float64) string {
+	sign := ""
+	if amount < 0 {
+		sign = "-"
+		amount = -amount
+	}
+
+	rounded := math.Round(amount*100) / 100
+	intPart := int64(rounded)
+	fracPart := int(math.Round((rounded - float64(intPart)) * 100))
+
+	intText := withThousandDotsCompact(strconv.FormatInt(intPart, 10))
+	if fracPart == 0 {
+		return sign + "Rp " + intText
+	}
+	return fmt.Sprintf("%sRp %s,%02d", sign, intText, fracPart)
+}
+
+func withThousandDotsCompact(s string) string {
+	if len(s) <= 3 {
+		return s
+	}
+
+	prefix := len(s) % 3
+	if prefix == 0 {
+		prefix = 3
+	}
+
+	var b strings.Builder
+	b.WriteString(s[:prefix])
+	for i := prefix; i < len(s); i += 3 {
+		b.WriteString(".")
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
 }
 
 func normalizeReportPeriod(raw string, fallback string) string {
