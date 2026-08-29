@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"log"
 	"strings"
 
 	"go.mau.fi/whatsmeow"
@@ -49,30 +50,51 @@ func (h *Handler) handleMessage(ctx context.Context, evt *events.Message) {
 		return
 	}
 
-	// 1) Whitelist check FIRST (silent reject).
-	if evt.Info.Sender.User != h.ownerNumber {
+	// 1) Abaikan pesan grup dan pesan dari bot sendiri
+	if evt.Info.IsGroup || evt.Info.IsFromMe {
 		return
 	}
 
-	// 2) Ignore groups in V1.
-	if evt.Info.IsGroup {
-		return
+	senderUser := evt.Info.Sender.User
+	if evt.Info.Chat.User != "" {
+		senderUser = evt.Info.Chat.User
 	}
 
-	// 3) Extract text from all supported variants.
+	// 2) Ambil isi teks
 	text := strings.TrimSpace(getTextFromMessage(evt.Message))
 	if text == "" {
 		return
 	}
 
-	// 4) Run callback.
-	response := strings.TrimSpace(h.onMessage(ctx, evt.Info.Sender.User, text))
-	if response == "" {
+	log.Printf("📩 Pesan masuk dari [%s] (Owner: %s): %s", senderUser, h.ownerNumber, text)
+
+	// 3) Whitelist check
+	if h.ownerNumber != "" && senderUser != h.ownerNumber {
+		log.Printf("⚠️ Pesan diabaikan: Pengirim %s tidak sesuai dengan owner %s", senderUser, h.ownerNumber)
 		return
 	}
 
-	// 5) Send response with typing presence (best-effort, silent on error).
-	_ = SendTextWithPresence(ctx, h.messenger, evt.Info.Sender.User, response)
+	// 4) Proses pesan ke AI
+	log.Println("🤖 Memproses pesan ke AI...")
+	response := strings.TrimSpace(h.onMessage(ctx, senderUser, text))
+	if response == "" {
+		log.Println("⚠️ Respon kosong dari AI")
+		return
+	}
+
+	// 5) Tentukan target tujuan (gunakan format Chat JID lengkap agar support LID)
+	target := evt.Info.Chat.String()
+	if target == "" {
+		target = evt.Info.Sender.String()
+	}
+
+	// Kirim pesan balasan
+	err := SendTextWithPresence(ctx, h.messenger, target, response)
+	if err != nil {
+		log.Printf("❌ Gagal mengirim pesan balasan: %v", err)
+		return
+	}
+	log.Println("✅ Balasan berhasil dikirim!")
 }
 
 func getTextFromMessage(msg *waE2E.Message) string {
@@ -80,38 +102,38 @@ func getTextFromMessage(msg *waE2E.Message) string {
 		return ""
 	}
 
-	// 1) Regular conversation text.
+	// 1) Regular conversation text
 	if t := msg.GetConversation(); t != "" {
 		return t
 	}
 
-	// 2) Extended text (links/web client/quoted text containers).
+	// 2) Extended text
 	if t := msg.GetExtendedTextMessage(); t != nil {
 		if text := t.GetText(); text != "" {
 			return text
 		}
 	}
 
-	// 3) Image caption.
+	// 3) Image caption
 	if t := msg.GetImageMessage(); t != nil {
 		if caption := t.GetCaption(); caption != "" {
 			return caption
 		}
 	}
 
-	// 4) Video caption.
+	// 4) Video caption
 	if t := msg.GetVideoMessage(); t != nil {
 		if caption := t.GetCaption(); caption != "" {
 			return caption
 		}
 	}
 
-	// 5) Ephemeral/disappearing messages.
+	// 5) Ephemeral/disappearing messages
 	if t := msg.GetEphemeralMessage(); t != nil {
 		return getTextFromMessage(t.GetMessage())
 	}
 
-	// 6) View-once messages.
+	// 6) View-once messages
 	if t := msg.GetViewOnceMessage(); t != nil {
 		return getTextFromMessage(t.GetMessage())
 	}
