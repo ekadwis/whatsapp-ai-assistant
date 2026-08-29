@@ -21,7 +21,7 @@ WORKDIR /app
 
 COPY --from=builder /app/bot .
 
-# Buat direktori untuk data SQLite & Service Account
-RUN mkdir -p data/whatsapp data/google
+RUN mkdir -p /app/data/whatsapp /app/data/google
 
-CMD ["./bot"]
+# Menulis file JSON otomatis dari env GOOGLE_CREDENTIALS_JSON jika tersedia
+CMD ["sh", "-c", "if [ -n \"$GOOGLE_CREDENTIALS_JSON\" ]; then echo \"$GOOGLE_CREDENTIALS_JSON\" > /app/data/google/service-account.json; fi && ./bot"]
