@@ -130,21 +130,25 @@ On first run:
 
 ---
 
-## Commands
+## Commands & User Guide
+
+> 📖 **Panduan lengkap contoh penggunaan & daftar perintah:** Lihat [COMMANDS_GUIDE.md](COMMANDS_GUIDE.md)
 
 ### General
-- `/start` — welcome
-- `/help` or `/menu` — command list
-- `/kategori` — category list
-- `/export` — sheet URL
+- `/start` — Welcome message
+- `/help` or `/menu` — Command list
+- `/kategori` — Category list
+- `/export` — Sheet URL
 
-### Finance
-- Natural examples:
+### Finance & AI Advice
+- Natural / Voice Note examples:
   - `beli nasi goreng 18k`
   - `gaji bulan ini 5jt`
-- `/laporan [hari ini|minggu ini|bulan ini]`
-- `/budget [kategori] [jumlah]`
-  - example: `/budget Makanan 500000`
+- `/laporan [hari ini|minggu ini|bulan ini|gajian|total]`
+  - `/laporan gajian` — Siklus gajian tgl 23 bulan lalu s/d 23 bulan ini / hari ini
+  - `/laporan total` — Total saldo & transaksi keseluruhan (all-time)
+- `/evaluasi` atau `/saran` — Evaluasi finansial & rekomendasi hemat AI
+- `/budget [kategori] [jumlah]` (contoh: `/budget Makanan 500000`)
 - `/edit [ID] [field] [nilai]`
 - `/hapus [ID]`
 
