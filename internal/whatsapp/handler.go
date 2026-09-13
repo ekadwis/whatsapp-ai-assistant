@@ -10,9 +10,13 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 )
 
+type AudioTranscriber func(ctx context.Context, audioBytes []byte, filename string) (string, error)
+
 type Handler struct {
 	messenger   Messenger
+	client      *whatsmeow.Client
 	ownerNumber string
+	transcriber AudioTranscriber
 	onMessage   func(ctx context.Context, sender string, text string) string
 }
 
@@ -20,14 +24,21 @@ func NewHandler(
 	m Messenger,
 	ownerNumber string,
 	onMessage func(ctx context.Context, sender string, text string) string,
+	transcriber ...AudioTranscriber,
 ) *Handler {
 	if onMessage == nil {
 		onMessage = func(context.Context, string, string) string { return "" }
 	}
 
+	var audioTr AudioTranscriber
+	if len(transcriber) > 0 {
+		audioTr = transcriber[0]
+	}
+
 	return &Handler{
 		messenger:   m,
 		ownerNumber: ownerNumber,
+		transcriber: audioTr,
 		onMessage:   onMessage,
 	}
 }
@@ -36,6 +47,7 @@ func (h *Handler) Register(client *whatsmeow.Client) {
 	if client == nil {
 		return
 	}
+	h.client = client
 
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
@@ -60,8 +72,27 @@ func (h *Handler) handleMessage(ctx context.Context, evt *events.Message) {
 		senderUser = evt.Info.Chat.User
 	}
 
-	// 2) Ambil isi teks
+	// 2) Ambil isi teks atau transkripsi audio
 	text := strings.TrimSpace(getTextFromMessage(evt.Message))
+	if text == "" {
+		if audioMsg := getAudioFromMessage(evt.Message); audioMsg != nil && h.client != nil && h.transcriber != nil {
+			log.Println("🎙️ Menerima pesan audio / Voice Note, mendownload...")
+			audioData, err := h.client.Download(ctx, audioMsg)
+			if err != nil {
+				log.Printf("❌ Gagal mendownload audio: %v", err)
+			} else if len(audioData) > 0 {
+				log.Println("🎙️ Mengirim audio ke Whisper API untuk ditranskripsi...")
+				transcribed, err := h.transcriber(ctx, audioData, "voice_note.ogg")
+				if err != nil {
+					log.Printf("❌ Gagal transkripsi audio: %v", err)
+				} else {
+					text = strings.TrimSpace(transcribed)
+					log.Printf("🎙️ Hasil transkripsi: %q", text)
+				}
+			}
+		}
+	}
+
 	if text == "" {
 		return
 	}
@@ -139,4 +170,20 @@ func getTextFromMessage(msg *waE2E.Message) string {
 	}
 
 	return ""
+}
+
+func getAudioFromMessage(msg *waE2E.Message) *waE2E.AudioMessage {
+	if msg == nil {
+		return nil
+	}
+	if a := msg.GetAudioMessage(); a != nil {
+		return a
+	}
+	if a := msg.GetEphemeralMessage(); a != nil {
+		return getAudioFromMessage(a.GetMessage())
+	}
+	if a := msg.GetViewOnceMessage(); a != nil {
+		return getAudioFromMessage(a.GetMessage())
+	}
+	return nil
 }

@@ -61,6 +61,18 @@ type ReportData struct {
 	Categories   map[string]float64
 }
 
+type AllTimeReportData struct {
+	TotalIncome   float64
+	TotalExpense  float64
+	NetBalance    float64
+	TotalCount    int
+	IncomeCount   int
+	ExpenseCount  int
+	EarliestDate  time.Time
+	LatestDate    time.Time
+	TopCategories map[string]float64
+}
+
 func NewFinanceService(repo sheets.SheetRepository, aiClient *ai.LLMClient) *FinanceService {
 	return &FinanceService{
 		repo: repo,
@@ -223,6 +235,172 @@ func (s *FinanceService) GenerateReport(ctx context.Context, period string) (*Re
 	report.NetBalance = report.TotalIncome - report.TotalExpense
 
 	return report, nil
+}
+
+// GenerateAllTimeReport generates an aggregated report of all transactions since inception.
+func (s *FinanceService) GenerateAllTimeReport(ctx context.Context) (*AllTimeReportData, error) {
+	if s == nil || s.repo == nil {
+		return nil, fmt.Errorf("sheet repository is nil")
+	}
+
+	allTxs, err := s.repo.GetAllTransactions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load all transactions: %w", err)
+	}
+
+	out := &AllTimeReportData{
+		TotalCount:    len(allTxs),
+		TopCategories: make(map[string]float64),
+	}
+
+	for _, tx := range allTxs {
+		if out.EarliestDate.IsZero() || tx.Date.Before(out.EarliestDate) {
+			out.EarliestDate = tx.Date
+		}
+		if out.LatestDate.IsZero() || tx.Date.After(out.LatestDate) {
+			out.LatestDate = tx.Date
+		}
+
+		if tx.Type == sheets.Income {
+			out.TotalIncome += tx.Amount
+			out.IncomeCount++
+		} else {
+			out.TotalExpense += tx.Amount
+			out.ExpenseCount++
+			normCat := normalizeCategoryForType(tx.Category, sheets.Expense)
+			out.TopCategories[normCat] += tx.Amount
+		}
+	}
+
+	out.NetBalance = out.TotalIncome - out.TotalExpense
+	out.TopCategories = topNCategories(out.TopCategories, 5)
+
+	return out, nil
+}
+
+// GenerateSalaryCycleReport generates a report for the salary cycle:
+// from the 23rd of previous month to the 23rd of current month (or today if current day < 23).
+func (s *FinanceService) GenerateSalaryCycleReport(ctx context.Context) (*ReportData, error) {
+	if s == nil || s.repo == nil {
+		return nil, fmt.Errorf("sheet repository is nil")
+	}
+
+	now := nowWIB()
+
+	var startDate, endDate time.Time
+	if now.Day() < 23 {
+		// e.g. 13 March -> 23 Feb 00:00:00 to 13 March 23:59:59
+		prevMonth := now.AddDate(0, -1, 0)
+		startDate = time.Date(prevMonth.Year(), prevMonth.Month(), 23, 0, 0, 0, 0, sheets.WIB)
+		endDate = time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, sheets.WIB)
+	} else {
+		// e.g. 26 March -> 23 Feb 00:00:00 to 23 March 23:59:59
+		prevMonth := now.AddDate(0, -1, 0)
+		startDate = time.Date(prevMonth.Year(), prevMonth.Month(), 23, 0, 0, 0, 0, sheets.WIB)
+		endDate = time.Date(now.Year(), now.Month(), 23, 23, 59, 59, 999999999, sheets.WIB)
+	}
+
+	txs, err := s.repo.GetTransactionsBetweenDates(ctx, startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch transactions for salary cycle: %w", err)
+	}
+
+	dateRange := fmt.Sprintf("%02d %s %d - %02d %s %d",
+		startDate.Day(), monthNamesID[startDate.Month()], startDate.Year(),
+		endDate.Day(), monthNamesID[endDate.Month()], endDate.Year(),
+	)
+
+	report := &ReportData{
+		Period:     "gajian",
+		DateRange:  dateRange,
+		Categories: make(map[string]float64),
+	}
+
+	for _, tx := range txs {
+		if tx.Type == sheets.Income {
+			report.TotalIncome += tx.Amount
+			continue
+		}
+		report.TotalExpense += tx.Amount
+		normCat := normalizeCategoryForType(tx.Category, sheets.Expense)
+		report.Categories[normCat] += tx.Amount
+	}
+
+	report.Categories = topNCategories(report.Categories, 5)
+	report.NetBalance = report.TotalIncome - report.TotalExpense
+
+	return report, nil
+}
+
+// GenerateFinancialEvaluation evaluates current financial health and offers suggestions via LLM.
+func (s *FinanceService) GenerateFinancialEvaluation(ctx context.Context) (string, error) {
+	if s == nil || s.repo == nil {
+		return "", fmt.Errorf("sheet repository is nil")
+	}
+	if s.ai == nil {
+		return "", fmt.Errorf("ai client is nil")
+	}
+
+	now := nowWIB()
+	tabName := tabNameForTime(now)
+	txs, err := s.repo.GetTransactions(ctx, tabName)
+	if err != nil {
+		return "", fmt.Errorf("failed to load transactions: %w", err)
+	}
+
+	if len(txs) == 0 {
+		return "📊 *Evaluasi Finansial*\n\nBelum ada data transaksi yang dicatat untuk bulan ini.", nil
+	}
+
+	totalIncome := 0.0
+	totalExpense := 0.0
+	catTotals := make(map[string]float64)
+
+	var txSummaries []string
+	for _, tx := range txs {
+		if tx.Type == sheets.Income {
+			totalIncome += tx.Amount
+		} else {
+			totalExpense += tx.Amount
+			normCat := normalizeCategoryForType(tx.Category, sheets.Expense)
+			catTotals[normCat] += tx.Amount
+		}
+		txSummaries = append(txSummaries, fmt.Sprintf("- [%s] %s (%s): %s",
+			tx.Date.Format("02/01"), tx.Description, tx.Category, formatter.FormatIDR(tx.Amount)))
+	}
+
+	limitTx := txSummaries
+	if len(limitTx) > 40 {
+		limitTx = limitTx[len(limitTx)-40:]
+	}
+
+	prompt := fmt.Sprintf(`Bulan ini: %s
+Total Pemasukan: %s
+Total Pengeluaran: %s
+Sisa Saldo: %s
+
+Breakdown Pengeluaran:
+`, tabName, formatter.FormatIDR(totalIncome), formatter.FormatIDR(totalExpense), formatter.FormatIDR(totalIncome-totalExpense))
+
+	for cat, amt := range catTotals {
+		prompt += fmt.Sprintf("- %s: %s\n", cat, formatter.FormatIDR(amt))
+	}
+
+	prompt += "\nDaftar Transaksi Terbaru:\n" + strings.Join(limitTx, "\n")
+
+	systemPrompt := `Kamu adalah financial advisor AI pribadi yang bijak, ramah, dan profesional.
+Tugasmu:
+1. Berikan analisis singkat dan to the point tentang kondisi keuangan user bulan ini.
+2. Identifikasi pos pengeluaran mana yang paling besar atau berpotensi boros/bocor halus.
+3. Berikan 3 rekomendasi atau saran tindakan konkret yang realistis dan aplikatif.
+Gunakan Bahasa Indonesia, formatting WhatsApp yang rapi dengan emoji (*bold*, bullet point), dan hindari kata-kata bertele-tele.`
+
+	resp, err := s.ai.Chat(ctx, systemPrompt, prompt)
+	if err != nil {
+		return "", fmt.Errorf("failed to get AI evaluation: %w", err)
+	}
+
+	return resp.Content, nil
 }
 
 func (s *FinanceService) EditTransaction(ctx context.Context, id, field, value string) (*sheets.Transaction, error) {

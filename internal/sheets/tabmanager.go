@@ -181,3 +181,23 @@ func (tm *TabManager) GetSheetID(tabName string) (int, bool) {
 	id, ok := tm.existingTabs[tabName]
 	return id, ok
 }
+
+// ListAllTabNames returns all sheet tab names in the spreadsheet.
+func (tm *TabManager) ListAllTabNames(ctx context.Context) ([]string, error) {
+	if tm == nil {
+		return nil, fmt.Errorf("tab manager is nil")
+	}
+
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if err := tm.refreshCacheLocked(ctx); err != nil {
+		return nil, err
+	}
+
+	names := make([]string, 0, len(tm.existingTabs))
+	for name := range tm.existingTabs {
+		names = append(names, name)
+	}
+	return names, nil
+}

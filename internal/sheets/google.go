@@ -3,6 +3,7 @@ package sheets
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -142,6 +143,92 @@ func (r *GoogleSheetRepository) GetTransactions(ctx context.Context, tabName str
 	}
 
 	return out, nil
+}
+
+func isSystemTab(tabName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(tabName))
+	switch lower {
+	case "dashboard", "budget", "notes", "reminders", "reminder", "template", "settings":
+		return true
+	default:
+		return false
+	}
+}
+
+// GetAllTransactions reads all transactions across all monthly tabs.
+func (r *GoogleSheetRepository) GetAllTransactions(ctx context.Context) ([]Transaction, error) {
+	if r == nil {
+		return nil, fmt.Errorf("repository is nil")
+	}
+
+	tabNames, err := r.tabManager.ListAllTabNames(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tabs: %w", err)
+	}
+
+	var all []Transaction
+	for _, tab := range tabNames {
+		if isSystemTab(tab) {
+			continue
+		}
+		txs, err := r.GetTransactions(ctx, tab)
+		if err != nil {
+			continue
+		}
+		all = append(all, txs...)
+	}
+
+	// Sort chronologically
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Date.Before(all[j].Date)
+	})
+
+	return all, nil
+}
+
+// GetTransactionsBetweenDates reads transactions falling within [startDate, endDate].
+func (r *GoogleSheetRepository) GetTransactionsBetweenDates(ctx context.Context, startDate, endDate time.Time) ([]Transaction, error) {
+	if r == nil {
+		return nil, fmt.Errorf("repository is nil")
+	}
+
+	if startDate.After(endDate) {
+		startDate, endDate = endDate, startDate
+	}
+
+	// Generate month tabs in range
+	tabSet := make(map[string]struct{})
+	cur := time.Date(startDate.Year(), startDate.Month(), 1, 0, 0, 0, 0, WIB)
+	endMonth := time.Date(endDate.Year(), endDate.Month(), 1, 0, 0, 0, 0, WIB)
+
+	for !cur.After(endMonth) {
+		tabSet[tabNameForTime(cur)] = struct{}{}
+		cur = cur.AddDate(0, 1, 0)
+	}
+
+	startBoundary := startDate.In(WIB)
+	endBoundary := endDate.In(WIB)
+
+	var result []Transaction
+	for tab := range tabSet {
+		txs, err := r.GetTransactions(ctx, tab)
+		if err != nil {
+			continue
+		}
+		for _, tx := range txs {
+			txDate := tx.Date.In(WIB)
+			if (txDate.Equal(startBoundary) || txDate.After(startBoundary)) &&
+				(txDate.Equal(endBoundary) || txDate.Before(endBoundary)) {
+				result = append(result, tx)
+			}
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date.Before(result[j].Date)
+	})
+
+	return result, nil
 }
 
 // GetTransactionByID finds a specific transaction in the monthly tab inferred from ID date.

@@ -14,6 +14,12 @@ type SheetRepository interface {
 	// GetTransactions reads all transactions for a tab (typically month tab).
 	GetTransactions(ctx context.Context, tabName string) ([]Transaction, error)
 
+	// GetAllTransactions reads all transactions across all monthly tabs.
+	GetAllTransactions(ctx context.Context) ([]Transaction, error)
+
+	// GetTransactionsBetweenDates reads all transactions across monthly tabs falling within [startDate, endDate].
+	GetTransactionsBetweenDates(ctx context.Context, startDate, endDate time.Time) ([]Transaction, error)
+
 	// GetTransactionByID finds a specific transaction across tabs.
 	// Returns: transaction, row index, tab name, error.
 	GetTransactionByID(ctx context.Context, id string) (*Transaction, int, string, error)

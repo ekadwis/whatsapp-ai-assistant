@@ -6,16 +6,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
 )
 
 type LLMClient struct {
-	httpClient *http.Client
-	baseURL    string
-	apiKey     string
-	model      string
+	httpClient     *http.Client
+	baseURL        string
+	apiKey         string
+	model          string
+	whisperBaseURL string
+	whisperAPIKey  string
+	whisperModel   string
 }
 
 type LLMResponse struct {
@@ -28,15 +32,115 @@ type ToolCall struct {
 	Arguments json.RawMessage
 }
 
-
-
 func NewLLMClient(baseURL, apiKey, model string) *LLMClient {
 	return &LLMClient{
-		httpClient: &http.Client{Timeout: 35 * time.Second},
-		baseURL:    strings.TrimSpace(baseURL),
-		apiKey:     strings.TrimSpace(apiKey),
-		model:      strings.TrimSpace(model),
+		httpClient:     &http.Client{Timeout: 45 * time.Second},
+		baseURL:        strings.TrimSpace(baseURL),
+		apiKey:         strings.TrimSpace(apiKey),
+		model:          strings.TrimSpace(model),
+		whisperBaseURL: strings.TrimSpace(baseURL),
+		whisperAPIKey:  strings.TrimSpace(apiKey),
+		whisperModel:   "whisper-1",
 	}
+}
+
+// SetWhisperConfig updates the Whisper transcription configuration.
+func (c *LLMClient) SetWhisperConfig(baseURL, apiKey, model string) {
+	if strings.TrimSpace(baseURL) != "" {
+		c.whisperBaseURL = strings.TrimSpace(baseURL)
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		c.whisperAPIKey = strings.TrimSpace(apiKey)
+	}
+	if strings.TrimSpace(model) != "" {
+		c.whisperModel = strings.TrimSpace(model)
+	}
+}
+
+// TranscribeAudio sends an audio file to an OpenAI-compatible /audio/transcriptions endpoint.
+func (c *LLMClient) TranscribeAudio(ctx context.Context, audioBytes []byte, filename string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("llm client is nil")
+	}
+	if len(audioBytes) == 0 {
+		return "", fmt.Errorf("audio content is empty")
+	}
+	if filename == "" {
+		filename = "voice_note.ogg"
+	}
+
+	whisperURL := c.whisperBaseURL
+	if whisperURL == "" {
+		whisperURL = c.baseURL
+	}
+	whisperKey := c.whisperAPIKey
+	if whisperKey == "" {
+		whisperKey = c.apiKey
+	}
+	whisperModel := c.whisperModel
+	if whisperModel == "" {
+		whisperModel = "whisper-1"
+	}
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return "", fmt.Errorf("failed to create multipart form file: %w", err)
+	}
+	if _, err := io.Copy(part, bytes.NewReader(audioBytes)); err != nil {
+		return "", fmt.Errorf("failed to write audio bytes to form: %w", err)
+	}
+
+	if err := writer.WriteField("model", whisperModel); err != nil {
+		return "", fmt.Errorf("failed to write model field: %w", err)
+	}
+	_ = writer.WriteField("language", "id")
+
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("failed to close multipart writer: %w", err)
+	}
+
+	endpoint := strings.TrimRight(whisperURL, "/") + "/audio/transcriptions"
+	reqCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, body)
+	if err != nil {
+		return "", fmt.Errorf("failed to create transcription request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+whisperKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("transcription request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read transcription response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("transcription failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
+	}
+
+	var transcriptionResp struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(respBytes, &transcriptionResp); err != nil {
+		return "", fmt.Errorf("failed to parse transcription response: %w", err)
+	}
+
+	text := strings.TrimSpace(transcriptionResp.Text)
+	if text == "" {
+		return "", fmt.Errorf("transcription returned empty text")
+	}
+
+	return text, nil
 }
 
 // Chat sends one system + one user message to an OpenAI-compatible endpoint.

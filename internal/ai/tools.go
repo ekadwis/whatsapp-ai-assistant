@@ -42,11 +42,22 @@ var ToolDefinitions = []map[string]interface{}{
 				"properties": map[string]interface{}{
 					"period": map[string]interface{}{
 						"type":        "string",
-						"enum":        []string{"daily", "weekly", "monthly"},
-						"description": "Periode laporan",
+						"enum":        []string{"daily", "weekly", "monthly", "gajian", "all_time"},
+						"description": "Periode laporan (daily=harian, weekly=mingguan, monthly=bulanan, gajian=siklus gajian 23-23, all_time=keseluruhan)",
 					},
 				},
 				"required": []string{"period"},
+			},
+		},
+	},
+	{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        "evaluate_finances",
+			"description": "Evaluasi keuangan, analisis pos pengeluaran terbesar/boros, dan berikan saran finansial/hemat cerdas",
+			"parameters": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
 			},
 		},
 	},

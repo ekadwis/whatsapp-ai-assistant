@@ -76,10 +76,13 @@ func main() {
 
 	// 5) Initialize services
 	llmClient := ai.NewLLMClient(cfg.LLMBaseURL, cfg.LLMApiKey, cfg.LLMModel)
+	llmClient.SetWhisperConfig(cfg.WhisperBaseURL, cfg.WhisperAPIKey, cfg.WhisperModel)
+
 	financeService := finance.NewFinanceService(repo, llmClient)
 	notesService := notes.NewNotesService(repo)
 	messenger := whatsapp.NewWhatsAppClient(client)
 	reminderService := reminder.NewService(repo, messenger, cfg.OwnerPhoneNumber)
+	reportScheduler := finance.NewReportScheduler(financeService, messenger, cfg.OwnerPhoneNumber)
 
 	// 6) LLM preflight (fail fast)
 	if err := verifyLLMConnectivity(ctx, llmClient); err != nil {
@@ -87,11 +90,16 @@ func main() {
 	}
 	log.Println("✅ LLM preflight check passed")
 
-	// 7) Start reminder scheduler
+	// 7) Start schedulers
 	if err := reminderService.Start(ctx); err != nil {
 		log.Fatalf("❌ Failed to start reminder service: %v", err)
 	}
 	log.Println("✅ Reminder scheduler started")
+
+	if err := reportScheduler.Start(ctx); err != nil {
+		log.Fatalf("❌ Failed to start report scheduler: %v", err)
+	}
+	log.Println("✅ Scheduled reports runner started (Daily 00:00, Weekly Mon 00:01, Monthly 1st 00:01)")
 
 	// 8) Command router
 	cmdRouter := commands.NewRouter()
@@ -101,6 +109,8 @@ func main() {
 	cmdRouter.Register("/kategori", commands.CategoryHandler)
 	cmdRouter.Register("/export", commands.NewExportHandlerFactory(cfg.SheetsID).Handler)
 	cmdRouter.Register("/laporan", commands.NewReportHandlerFactory(financeService).Handler)
+	cmdRouter.Register("/evaluasi", commands.NewEvaluationHandlerFactory(financeService).Handler)
+	cmdRouter.Register("/saran", commands.NewEvaluationHandlerFactory(financeService).Handler)
 	cmdRouter.Register("/budget", commands.NewBudgetHandlerFactory(financeService).Handler)
 	cmdRouter.Register("/notes", commands.NewNotesHandlerFactory(notesService).Handler)
 	cmdRouter.Register("/edit", commands.NewEditHandlerFactory(financeService).Handler)
@@ -111,8 +121,8 @@ func main() {
 	// 9) App router
 	appRouter := app.NewAppRouter(cmdRouter, llmClient, financeService, notesService, reminderService)
 
-	// 10) WhatsApp message handler registration
-	handler := whatsapp.NewHandler(messenger, cfg.OwnerPhoneNumber, appRouter.HandleMessage)
+	// 10) WhatsApp message handler registration (with voice note transcription support)
+	handler := whatsapp.NewHandler(messenger, cfg.OwnerPhoneNumber, appRouter.HandleMessage, llmClient.TranscribeAudio)
 	handler.Register(client)
 
 	log.Println("✅ Bot is running! Waiting for messages...")
@@ -123,6 +133,7 @@ func main() {
 	<-sigChan
 
 	log.Println("⏳ Shutting down...")
+	reportScheduler.Stop()
 	reminderService.Stop()
 	client.Disconnect()
 	log.Println("✅ Bot stopped. Goodbye!")

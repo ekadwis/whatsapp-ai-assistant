@@ -74,9 +74,29 @@ func (f *ReportHandlerFactory) Handler(ctx context.Context, args string) string 
 		return formatter.FormatError("service laporan belum siap")
 	}
 
-	period := strings.TrimSpace(args)
+	period := strings.ToLower(strings.TrimSpace(args))
 	if period == "" {
 		period = "hari ini"
+	}
+
+	if period == "gajian" || period == "siklus gajian" || period == "gaji" {
+		report, err := f.finance.GenerateSalaryCycleReport(ctx)
+		if err != nil {
+			return formatter.FormatError("Gagal membuat laporan gajian: " + err.Error())
+		}
+		return formatter.FormatSalaryCycleReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories)
+	}
+
+	if period == "total" || period == "semua" || period == "keseluruhan" || period == "all" || period == "all-time" {
+		report, err := f.finance.GenerateAllTimeReport(ctx)
+		if err != nil {
+			return formatter.FormatError("Gagal membuat laporan keseluruhan: " + err.Error())
+		}
+		return formatter.FormatAllTimeReport(
+			report.TotalIncome, report.TotalExpense, report.NetBalance,
+			report.TotalCount, report.IncomeCount, report.ExpenseCount,
+			report.EarliestDate, report.LatestDate, report.TopCategories,
+		)
 	}
 
 	report, err := f.finance.GenerateReport(ctx, period)
@@ -92,6 +112,28 @@ func (f *ReportHandlerFactory) Handler(ctx context.Context, args string) string 
 	default:
 		return formatter.FormatMonthlyReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories)
 	}
+}
+
+type EvaluationHandlerFactory struct {
+	finance *finance.FinanceService
+}
+
+func NewEvaluationHandlerFactory(fin *finance.FinanceService) *EvaluationHandlerFactory {
+	return &EvaluationHandlerFactory{finance: fin}
+}
+
+func (f *EvaluationHandlerFactory) Handler(ctx context.Context, args string) string {
+	_ = args
+	if f == nil || f.finance == nil {
+		return formatter.FormatError("service evaluasi belum siap")
+	}
+
+	eval, err := f.finance.GenerateFinancialEvaluation(ctx)
+	if err != nil {
+		return formatter.FormatError("Gagal membuat evaluasi: " + err.Error())
+	}
+
+	return eval
 }
 
 type BudgetHandlerFactory struct {

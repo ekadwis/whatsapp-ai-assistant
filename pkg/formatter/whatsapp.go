@@ -34,22 +34,71 @@ func FormatMonthlyReport(month string, totalIncome, totalExpense float64, catego
 	return formatReport("📊 *Laporan Bulanan*", month, totalIncome, totalExpense, categories)
 }
 
+func FormatSalaryCycleReport(dateRange string, totalIncome, totalExpense float64, categories map[string]float64) string {
+	return formatReport("💼 *Laporan Siklus Gajian*", dateRange, totalIncome, totalExpense, categories)
+}
+
+func FormatAllTimeReport(totalIncome, totalExpense, netBalance float64, totalCount, incomeCount, expenseCount int, earliest, latest time.Time, topCategories map[string]float64) string {
+	dateRange := "Semua Transaksi"
+	if !earliest.IsZero() && !latest.IsZero() {
+		dateRange = fmt.Sprintf("%s s.d. %s", earliest.Format("02 Jan 2006"), latest.Format("02 Jan 2006"))
+	}
+
+	var b strings.Builder
+	b.WriteString("📈 *Laporan Keseluruhan (All-Time)*\n")
+	b.WriteString("📅 Periode: ")
+	b.WriteString(dateRange)
+	b.WriteString("\n\n")
+
+	b.WriteString("💵 Total Pemasukan: ")
+	b.WriteString(formatIDR(totalIncome))
+	b.WriteString(fmt.Sprintf(" (%d transaksi)", incomeCount))
+	b.WriteString("\n💸 Total Pengeluaran: ")
+	b.WriteString(formatIDR(totalExpense))
+	b.WriteString(fmt.Sprintf(" (%d transaksi)", expenseCount))
+	b.WriteString("\n💰 Sisa Saldo Akumulasi: ")
+	b.WriteString(formatIDR(netBalance))
+	b.WriteString(fmt.Sprintf("\n🔢 Total Seluruh Catatan: %d transaksi\n", totalCount))
+
+	if len(topCategories) > 0 {
+		b.WriteString("\n📂 *Top Pengeluaran per Kategori:*\n")
+		type kv struct {
+			k string
+			v float64
+		}
+		var pairs []kv
+		for k, v := range topCategories {
+			pairs = append(pairs, kv{k, v})
+		}
+		sort.Slice(pairs, func(i, j int) bool {
+			return pairs[i].v > pairs[j].v
+		})
+		for _, p := range pairs {
+			b.WriteString(fmt.Sprintf("• %s: %s\n", safe(p.k), formatIDR(p.v)))
+		}
+	}
+
+	return strings.TrimSpace(b.String())
+}
+
 func FormatWelcome() string {
 	return "👋 *Halo! Selamat datang di WA AI Assistant!*\n\n" +
-		"Saya asisten keuangan pribadi Anda.\n\n" +
+		"Saya asisten keuangan & produktivitas pribadi Anda.\n\n" +
 		"✨ Fitur utama:\n" +
-		"• Catat pengeluaran/pemasukan pakai bahasa natural\n" +
-		"• Laporan harian, mingguan, bulanan\n" +
-		"• Budget per kategori + peringatan\n" +
-		"• Catatan cepat dan export Google Sheets\n\n" +
+		"• Catat pengeluaran/pemasukan via teks atau Voice Note (VN)\n" +
+		"• Laporan harian, mingguan, bulanan, gajian, & all-time\n" +
+		"• Evaluasi & rekomendasi cerdas dari AI (/evaluasi)\n" +
+		"• Budget per kategori + peringatan otomatis\n" +
+		"• Pengingat terjadwal & export Google Sheets\n\n" +
 		"Ketik */help* untuk melihat semua perintah."
 }
 
 func FormatHelp() string {
 	return "📖 *Daftar Perintah:*\n\n" +
 		"💰 *Keuangan*\n" +
-		"• Kirim pesan seperti \"beli ayam crispy 16k\" untuk mencatat pengeluaran\n" +
-		"• /laporan [hari ini|minggu ini|bulan ini] — Lihat laporan\n" +
+		"• Kirim pesan/VN seperti \"beli ayam crispy 16k\" untuk mencatat pengeluaran\n" +
+		"• /laporan [hari ini|minggu ini|bulan ini|gajian|total] — Lihat laporan\n" +
+		"• /evaluasi atau /saran — Evaluasi finansial & saran hemat dari AI\n" +
 		"• /budget [kategori] [jumlah] — Atur budget\n" +
 		"• /edit [ID] [field] [nilai] — Edit transaksi\n" +
 		"• /hapus [ID] — Hapus transaksi\n\n" +
@@ -169,6 +218,10 @@ func topCategories(m map[string]float64, n int) []categoryAmount {
 		items = items[:n]
 	}
 	return items
+}
+
+func FormatIDR(amount float64) string {
+	return formatIDR(amount)
 }
 
 func formatIDR(amount float64) string {

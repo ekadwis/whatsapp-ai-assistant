@@ -21,7 +21,7 @@ import (
 
 const defaultPendingTTL = 5 * time.Minute
 
-const defaultSystemPrompt = `Kamu adalah asisten keuangan pribadi yang terintegrasi dengan WhatsApp. Kamu membantu user mencatat pengeluaran dan pemasukan.
+const defaultSystemPrompt = `Kamu adalah asisten keuangan pribadi yang terintegrasi dengan WhatsApp. Kamu membantu user mencatat pengeluaran, pemasukan, mengevaluasi keuangan, dan memberi laporan.
 
 ATURAN:
 1. User menulis dalam Bahasa Indonesia. Jawab dalam Bahasa Indonesia.
@@ -30,11 +30,13 @@ ATURAN:
 4. Parse nominal dari format Indonesia: "16k" = 16000, "1.5jt" = 1500000, "50rb" = 50000, "16.000" = 16000.
 5. Jika pesan BUKAN tentang keuangan, jawab sebagai asisten AI yang helpful (general chat).
 6. Selalu tentukan kategori yang paling cocok dari daftar yang tersedia.
-7. Jika tidak yakin apakah pesan tentang keuangan, tanyakan klarifikasi.
+7. Jika user meminta evaluasi/saran keuangan atau bertanya apakah boros, gunakan tool evaluate_finances.
+8. Jika user meminta laporan (harian, mingguan, bulanan, gajian, atau keseluruhan/total), gunakan tool get_report.
 
 TOOLS YANG TERSEDIA:
 - record_transaction: Catat pengeluaran atau pemasukan
-- get_report: Buat laporan keuangan (harian/mingguan/bulanan)
+- get_report: Buat laporan keuangan (daily/weekly/monthly/gajian/all_time)
+- evaluate_finances: Evaluasi keuangan, analisis pos pengeluaran, dan berikan saran finansial/hemat
 - set_budget: Atur budget per kategori
 - save_note: Simpan catatan cepat
 - edit_transaction: Edit transaksi yang sudah ada (berdasarkan ID)
@@ -198,6 +200,31 @@ func (r *AppRouter) handleToolCalls(ctx context.Context, sender string, calls []
 				continue
 			}
 
+			normPeriod := normalizeReportPeriod(args.Period, "")
+			if normPeriod == "gajian" {
+				report, err := r.financeService.GenerateSalaryCycleReport(ctx)
+				if err != nil {
+					responses = append(responses, formatter.FormatError(err.Error()))
+					continue
+				}
+				responses = append(responses, formatter.FormatSalaryCycleReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories))
+				continue
+			}
+
+			if normPeriod == "all_time" {
+				report, err := r.financeService.GenerateAllTimeReport(ctx)
+				if err != nil {
+					responses = append(responses, formatter.FormatError(err.Error()))
+					continue
+				}
+				responses = append(responses, formatter.FormatAllTimeReport(
+					report.TotalIncome, report.TotalExpense, report.NetBalance,
+					report.TotalCount, report.IncomeCount, report.ExpenseCount,
+					report.EarliestDate, report.LatestDate, report.TopCategories,
+				))
+				continue
+			}
+
 			report, err := r.financeService.GenerateReport(ctx, args.Period)
 			if err != nil {
 				responses = append(responses, formatter.FormatError(err.Error()))
@@ -212,6 +239,19 @@ func (r *AppRouter) handleToolCalls(ctx context.Context, sender string, calls []
 			default:
 				responses = append(responses, formatter.FormatDailyReport(report.DateRange, report.TotalIncome, report.TotalExpense, report.Categories))
 			}
+
+		case "evaluate_finances":
+			if r.financeService == nil {
+				responses = append(responses, formatter.FormatError("Service evaluasi belum siap."))
+				continue
+			}
+
+			eval, err := r.financeService.GenerateFinancialEvaluation(ctx)
+			if err != nil {
+				responses = append(responses, formatter.FormatError(err.Error()))
+				continue
+			}
+			responses = append(responses, eval)
 
 		case "set_budget":
 			if r.financeService == nil {
@@ -531,11 +571,15 @@ func normalizeReportPeriod(raw string, fallback string) string {
 		return "weekly"
 	case "monthly", "bulanan", "bulan ini":
 		return "monthly"
+	case "gajian", "siklus gajian", "gaji":
+		return "gajian"
+	case "all_time", "all", "total", "semua", "keseluruhan", "all-time":
+		return "all_time"
 	}
 
 	fb := strings.ToLower(strings.TrimSpace(fallback))
 	switch fb {
-	case "daily", "weekly", "monthly":
+	case "daily", "weekly", "monthly", "gajian", "all_time":
 		return fb
 	default:
 		return "daily"

@@ -18,6 +18,9 @@ type Config struct {
 	SheetsID         string // SHEETS_SPREADSHEET_ID — required
 	WASessionDBPath  string // WHATSAPP_SESSION_DB_PATH — required
 	OwnerPhoneNumber string // OWNER_PHONE_NUMBER — required, digits only, min 10 chars
+	WhisperBaseURL   string // WHISPER_BASE_URL — optional, fallback to LLM_BASE_URL
+	WhisperAPIKey    string // WHISPER_API_KEY — optional, fallback to LLM_API_KEY
+	WhisperModel     string // WHISPER_MODEL — optional, default "whisper-1"
 }
 
 // Load reads configuration from .env/environment variables and validates them.
@@ -27,6 +30,10 @@ func Load() (*Config, error) {
 	// Use Overload so test-provided .env values can replace existing env values.
 	_ = godotenv.Overload()
 
+	whisperBaseURL := strings.TrimSpace(os.Getenv("WHISPER_BASE_URL"))
+	whisperAPIKey := strings.TrimSpace(os.Getenv("WHISPER_API_KEY"))
+	whisperModel := strings.TrimSpace(os.Getenv("WHISPER_MODEL"))
+
 	cfg := &Config{
 		LLMApiKey:        strings.TrimSpace(os.Getenv("LLM_API_KEY")),
 		LLMBaseURL:       strings.TrimSpace(os.Getenv("LLM_BASE_URL")),
@@ -35,6 +42,19 @@ func Load() (*Config, error) {
 		SheetsID:         strings.TrimSpace(os.Getenv("SHEETS_SPREADSHEET_ID")),
 		WASessionDBPath:  strings.TrimSpace(os.Getenv("WHATSAPP_SESSION_DB_PATH")),
 		OwnerPhoneNumber: strings.TrimSpace(os.Getenv("OWNER_PHONE_NUMBER")),
+		WhisperBaseURL:   whisperBaseURL,
+		WhisperAPIKey:    whisperAPIKey,
+		WhisperModel:     whisperModel,
+	}
+
+	if cfg.WhisperBaseURL == "" {
+		cfg.WhisperBaseURL = cfg.LLMBaseURL
+	}
+	if cfg.WhisperAPIKey == "" {
+		cfg.WhisperAPIKey = cfg.LLMApiKey
+	}
+	if cfg.WhisperModel == "" {
+		cfg.WhisperModel = "whisper-1"
 	}
 
 	if err := validate(cfg); err != nil {
